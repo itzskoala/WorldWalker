@@ -1,0 +1,8 @@
+fastapi
+pydantic
+uvicorn
+pytest
+httpx
+pytest-httpx
+google-auth
+requests
