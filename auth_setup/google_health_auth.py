@@ -36,12 +36,19 @@ def _load_client() -> tuple[str, str, str]:
 
 
 def build_auth_url() -> str:
-    """URL to open in a browser to grant consent (step 1 of auth_setup/authorize.py)."""
+    """URL to open in a browser to grant consent (step 1 of auth_setup/authorize.py).
+
+    prompt=consent forces Google to re-show the consent screen and issue a
+    fresh refresh_token even if this client was already authorized before -
+    without it, Google only returns a refresh_token on a user's very first
+    consent grant, and silently omits it on every re-authorization after
+    that (this bit us: an earlier .tokens.json had no refresh_token at
+    all, so the access token became a dead end the moment it expired)."""
     client_id, _, redirect_uri = _load_client()
     scope = " ".join(SCOPES)
     return (
         f"{AUTH_URL}?client_id={client_id}&redirect_uri={redirect_uri}"
-        f"&response_type=code&access_type=offline&scope={scope}"
+        f"&response_type=code&access_type=offline&prompt=consent&scope={scope}"
     )
 
 
@@ -68,6 +75,11 @@ def refresh_access_token() -> dict:
     """Use the saved refresh_token to get a new access_token."""
     client_id, client_secret, _ = _load_client()
     tokens = json.loads(TOKENS_PATH.read_text())
+    if "refresh_token" not in tokens:
+        raise RuntimeError(
+            "No refresh_token in .tokens.json - rerun `venv/bin/python3 auth_setup/authorize.py` "
+            "to get a fresh one (build_auth_url() now forces prompt=consent so this shouldn't recur)."
+        )
     response = httpx.post(TOKEN_URL, data={
         "refresh_token": tokens["refresh_token"],
         "client_id": client_id,

@@ -2,6 +2,8 @@
 # Authenticated calls against the Google Health API (v4).
 # Docs: https://developers.google.com/health/reference/rest/v4
 
+from datetime import datetime, timedelta
+
 import httpx
 
 from auth_setup.google_health_auth import get_access_token, refresh_access_token
@@ -16,19 +18,55 @@ BASE_URL = "https://health.googleapis.com/v4"
 SAMPLE_TYPES = {"heart-rate"}
 
 
+def _parse_iso(timestamp: str) -> datetime:
+    return datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+
+
+def _civil_date(timestamp: str, plus_days: int = 0) -> str:
+    return (_parse_iso(timestamp).date() + timedelta(days=plus_days)).isoformat()
+
+
 def _filter_query(data_type: str, start_time: str, end_time: str) -> str:
     """Comparators are >= and < only (no <=) for every filterable field.
-    "sleep" is a further special case: it only supports filtering on
-    interval.end_time, not interval.start_time - also confirmed from the
-    list-method reference above."""
+    Two data types don't support filtering on interval.start_time the way
+    "steps" does - confirmed against the real API, not assumed:
+    - "sleep" only supports interval.end_time.
+    - "exercise" only supports interval.civil_start_time - a CALENDAR-DATE
+      field (confirmed live: a real 400 INVALID_DATA_POINT_FILTER hit when
+      this assumed interval.start_time worked here too, then confirmed
+      against developers.google.com/health/reference/rest/v4/users.dataTypes.dataPoints/list).
+      Since it's date-granularity, not a precise timestamp, we widen to
+      whole civil days here (the exclusive upper bound is bumped a day to
+      safely cover a session that started near midnight in the subject's
+      local time) and narrow back down to the real requested window in
+      get_data_points() after fetching - see _overlaps_window().
+    """
     field = data_type.replace("-", "_")
     if data_type == "sleep":
         member = "sleep.interval.end_time"
-    elif data_type in SAMPLE_TYPES:
+        return f'{member} >= "{start_time}" AND {member} < "{end_time}"'
+    if data_type == "exercise":
+        member = "exercise.interval.civil_start_time"
+        return f'{member} >= "{_civil_date(start_time)}" AND {member} < "{_civil_date(end_time, plus_days=1)}"'
+    if data_type in SAMPLE_TYPES:
         member = f"{field}.sample_time.physical_time"
     else:
         member = f"{field}.interval.start_time"
     return f'{member} >= "{start_time}" AND {member} < "{end_time}"'
+
+
+def _overlaps_window(point: dict, start_time: str, end_time: str) -> bool:
+    """True if this point's own physical interval actually overlaps
+    [start_time, end_time). Only meaningful for data types whose API
+    filter is coarser than what we actually asked for (exercise's
+    civil-date filter can return other sessions from the same calendar
+    day) - without this, a second exercise notification the same day
+    would re-pull and re-process an earlier session, double-counting it."""
+    interval = point.get("interval", {})
+    point_start, point_end = interval.get("startTime"), interval.get("endTime")
+    if not point_start or not point_end:
+        return True  # can't check - keep it rather than risk dropping real data
+    return _parse_iso(point_end) > _parse_iso(start_time) and _parse_iso(point_start) < _parse_iso(end_time)
 
 
 def get_data_points(data_type: str, start_time: str, end_time: str) -> list[dict]:
@@ -55,7 +93,12 @@ def get_data_points(data_type: str, start_time: str, end_time: str) -> list[dict
 
     field = _camel_case(data_type)
     raw_points = response.json().get("dataPoints", [])
-    return [point.get(field, point) for point in raw_points]
+    points = [point.get(field, point) for point in raw_points]
+
+    if data_type == "exercise":
+        points = [p for p in points if _overlaps_window(p, start_time, end_time)]
+
+    return points
 
 
 def _camel_case(data_type: str) -> str:

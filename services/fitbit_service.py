@@ -5,12 +5,14 @@
 # the background, pull the real data for that interval and route it
 # through the matching strategy.
 
+from datetime import datetime, timezone
 from fastapi import FastAPI, Request, HTTPException, BackgroundTasks, Response
 from services.google_health_client import get_data_points
 from services.fitbitMetrics.fitbit_steps import StepsMetric
 from services.fitbitMetrics.fitbit_exercise import ExerciseMetric
 from services.fitbitMetrics.fitbit_sleep import SleepMetric
 from services.fitbitMetrics.fitbit_heart_rate import HeartRateMetric
+from core.facade import travel_facade, DEFAULT_USER_ID
 
 app = FastAPI()
 
@@ -23,10 +25,18 @@ def process_health_data(data_type: str, point: dict):
         case "steps":
             obj = StepsMetric(point).metric_obj()
             print(f"👣 {obj.count} steps between {obj.interval.start_time} and {obj.interval.end_time}")
+            try:
+                travel_facade.record_steps(DEFAULT_USER_ID, obj.count, obj.interval)
+            except ValueError as e:
+                print(f"❌ {e}")
 
         case "exercise":
             obj = ExerciseMetric(point).metric_obj()
             print(f"🏃 {obj.exercise_type} logged. Steps tracked: {obj.metrics_summary.steps}")
+            try:
+                travel_facade.record_workout(DEFAULT_USER_ID, obj)
+            except ValueError as e:
+                print(f"❌ {e}")
 
         case "sleep":
             obj = SleepMetric(point).metric_obj() #only need to sleep to grab sleep ONCE at the first sync of the day...need to implement this! 
@@ -62,6 +72,39 @@ def process_notification(notification: dict):
 
         for point in points:
             process_health_data(data_type, point)
+
+
+BACKFILL_DATA_TYPES = ("steps", "exercise", "sleep", "heart-rate")
+
+
+def backfill_since(start_time: str, end_time: str = None) -> None:
+    """One-shot catch-up for the gap BEFORE the webhook ever saw anything -
+    e.g. a journey started last Saturday but the watch's first real sync
+    doesn't happen until today. The webhook only ever reports data forward
+    from whenever Google actually pushes a notification; it has no way to
+    tell you about a gap that predates that. Call this once, manually,
+    right after start_journey (not on a schedule - YAGNI until repeated
+    catch-up is actually needed).
+
+    Reuses process_notification as-is: builds the same
+    {"dataType", "intervals": [...]}} shape a real webhook notification
+    carries, so a backfilled point goes through the exact same pull +
+    dispatch path a live one does - one pipeline, not two.
+
+    start_time/end_time: ISO 8601 UTC, e.g. "2026-09-05T00:00:00Z".
+    end_time defaults to now.
+
+    Known limitation: get_data_points() doesn't paginate - fine for the
+    few-day gaps this is meant for, but a very long backfill could
+    silently truncate if a dataType has more points than one API page
+    holds. Revisit if that turns out to matter.
+    """
+    end_time = end_time or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    for data_type in BACKFILL_DATA_TYPES:
+        process_notification({
+            "dataType": data_type,
+            "intervals": [{"physicalTimeInterval": {"startTime": start_time, "endTime": end_time}}],
+        })
 
 
 # This is the Webhook Endpoint Google talks to

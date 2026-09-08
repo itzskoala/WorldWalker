@@ -3,7 +3,7 @@
 from fastapi.testclient import TestClient
 
 import services.fitbit_service as fitbit_service
-from services.fitbit_service import app, process_health_data, process_notification
+from services.fitbit_service import app, process_health_data, process_notification, backfill_since, BACKFILL_DATA_TYPES
 
 client = TestClient(app)
 
@@ -88,6 +88,41 @@ def test_webhook_acks_204_and_schedules_background_pull(monkeypatch, capsys):
     )
 
     assert response.status_code == 204
+    assert "1250 steps" in capsys.readouterr().out
+
+
+def test_backfill_since_pulls_every_tracked_data_type_for_the_given_range(monkeypatch):
+    calls = []
+
+    def fake_get_data_points(data_type, start_time, end_time):
+        calls.append((data_type, start_time, end_time))
+        return []
+
+    monkeypatch.setattr(fitbit_service, "get_data_points", fake_get_data_points)
+
+    backfill_since("2026-09-05T00:00:00Z", "2026-09-08T00:00:00Z")
+
+    assert set(BACKFILL_DATA_TYPES) == {"steps", "exercise", "sleep", "heart-rate"}
+    assert calls == [
+        (data_type, "2026-09-05T00:00:00Z", "2026-09-08T00:00:00Z") for data_type in BACKFILL_DATA_TYPES
+    ]
+
+
+def test_backfill_since_defaults_end_time_to_now(monkeypatch):
+    calls = []
+    monkeypatch.setattr(fitbit_service, "get_data_points", lambda *a, **k: calls.append(a) or [])
+
+    backfill_since("2026-09-05T00:00:00Z")
+
+    # Every call got some non-empty end_time (defaulted to "now"), not None.
+    assert all(call[2] for call in calls)
+
+
+def test_backfill_since_routes_pulled_points_through_the_normal_pipeline(monkeypatch, capsys):
+    monkeypatch.setattr(fitbit_service, "get_data_points", lambda data_type, s, e: [STEPS_POINT] if data_type == "steps" else [])
+
+    backfill_since("2026-09-05T00:00:00Z", "2026-09-08T00:00:00Z")
+
     assert "1250 steps" in capsys.readouterr().out
 
 
