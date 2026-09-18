@@ -161,6 +161,32 @@ def test_halfway_event_notifies_once_and_never_again(facade):
     assert listener.received == ["🎉 Halfway to your goal - 50%!"]
 
 
+# --- app.py's UI-facing helpers ---
+
+def test_start_journey_stores_round_trip_but_route_stays_one_way(monkeypatch):
+    f = TravelFacade()
+    monkeypatch.setattr(f._geocoder, "geocode", lambda place: Coordinates(0, 0))
+    monkeypatch.setattr(f._router, "get_walking_route", lambda start, end: Route(
+        points=[RoutePoint(Coordinates(0, 0), 0.0), RoutePoint(Coordinates(1, 1), 10.0)], total_miles=10.0,
+    ))
+    monkeypatch.setattr(f._landmarks_db, "save_landmarks", lambda user_id, landmarks: None)
+
+    f.start_journey("me", "A", "B", round_trip=True)
+
+    assert f._sessions["me"]["round_trip"] is True
+    assert f._sessions["me"]["route"].total_miles == 10.0  # not doubled - flagged, not built this pass
+
+
+def test_search_places_delegates_to_the_geocoder(facade, monkeypatch):
+    monkeypatch.setattr(facade._geocoder, "search_places", lambda query, limit=5: [f"{query} match"])
+    assert facade.search_places("ariz") == ["ariz match"]
+
+
+def test_current_location_place_delegates_to_reverse_geocode(facade, monkeypatch):
+    monkeypatch.setattr(facade._geocoder, "reverse_geocode", lambda coords: f"place at {coords.lat},{coords.lng}")
+    assert facade.current_location_place(44.9, -93.2) == "place at 44.9,-93.2"
+
+
 def test_finished_event_includes_destination_and_total_steps(facade):
     listener = _RecordingListener()
     facade.events.subscribe("finished", listener)

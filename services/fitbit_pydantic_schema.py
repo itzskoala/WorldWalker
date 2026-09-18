@@ -68,7 +68,7 @@ class ExerciseData(BaseModel):
 
 
 class UserData(BaseModel):
-    """Profile pull (services.google_health_client.get_profile), not
+    """Profile pull (services.google_health.client.get_profile), not
     webhook-driven - see that function's docstring. Documented fields are
     limited to age + membership start date; NOT the classic Fitbit
     gender/height/weight fields.

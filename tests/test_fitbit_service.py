@@ -126,6 +126,17 @@ def test_backfill_since_routes_pulled_points_through_the_normal_pipeline(monkeyp
     assert "1250 steps" in capsys.readouterr().out
 
 
+def test_auth_callback_is_reachable_through_the_fully_mounted_app():
+    # Regression guard: gr.mount_gradio_app(app, ..., path="/") is a
+    # catch-all Mount added at the bottom of this module. A route included
+    # *after* that Mount would silently 404/fall through to Gradio instead
+    # of reaching FastAPI - confirms auth_router really is registered
+    # before that mount, not just reachable in auth/router.py's own
+    # isolated test app (see tests/test_auth_router.py).
+    response = client.get("/auth/google/callback", params={"error": "access_denied"})
+    assert response.status_code == 400
+
+
 def test_webhook_verification_ping_is_accepted():
     # Google's verification handshake: {"type": "verification"}, no "data" key.
     response = client.post(

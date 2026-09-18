@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>WorldWalker — Walk the World</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🌍</text></svg>" />
+
+  <!-- Applied before first paint so the page never flashes the wrong
+       theme on load - see web/static/js/app.js for the toggle itself.
+       Dark is the default look; a saved preference (from the toggle)
+       always wins over that default. -->
+  <script>
+    (function () {
+      try {
+        var saved = localStorage.getItem("ww-theme");
+        document.documentElement.setAttribute("data-theme", saved || "dark");
+      } catch (e) {}
+    })();
+  </script>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&family=Google+Sans+Text:wght@400;500;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/css/style.css" />
+</head>
+<body>
+
+  <div class="app">
+
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark">🌍</span>
+        <span class="brand-name">WorldWalker</span>
+      </div>
+
+      <div class="topbar-actions">
+        <button type="button" id="theme-toggle" class="theme-toggle" aria-label="Switch to light mode" aria-pressed="false">
+          <span class="theme-toggle-track">
+            <svg class="theme-toggle-icon theme-toggle-sun" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="4.5" stroke="currentColor" stroke-width="1.8"/><path d="M12 2.5v2.4M12 19.1v2.4M4.2 4.2l1.7 1.7M18.1 18.1l1.7 1.7M2.5 12h2.4M19.1 12h2.4M4.2 19.8l1.7-1.7M18.1 5.9l1.7-1.7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+            <svg class="theme-toggle-icon theme-toggle-moon" viewBox="0 0 24 24" fill="none"><path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a7 7 0 0 0 10.5 10.5Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
+            <span class="theme-toggle-knob"></span>
+          </span>
+        </button>
+
+        <a
+          id="connect-btn"
+          class="btn btn-connect {{ 'is-disabled' if not connect_url else '' }}"
+          href="{{ connect_url or '#' }}"
+          target="_blank"
+          rel="noopener"
+          {{ 'aria-disabled=true tabindex=-1' if not connect_url else '' }}
+        >
+          <svg class="icon" viewBox="0 0 24 24" fill="none"><path d="M12 2 4 5.5v6c0 5.05 3.4 9.77 8 11 4.6-1.23 8-5.95 8-11v-6L12 2Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="m9 12 2 2 4-4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          Connect
+        </a>
+      </div>
+    </header>
+
+    <section class="globe-header">
+      <canvas id="globe-canvas" class="globe-canvas" aria-hidden="true"></canvas>
+      <div class="globe-header-scrim" aria-hidden="true"></div>
+      <div class="globe-header-text">
+        <h1 class="hero-title">Walk the World</h1>
+        <p class="hero-sub">Turn your real, everyday steps into a journey across the globe.</p>
+      </div>
+    </section>
+
+    <main class="content">
+
+      <section class="search-card" aria-label="Plan your walk">
+
+        <div class="trip-toggle" role="radiogroup" aria-label="Trip type">
+          <button type="button" class="trip-pill is-active" data-trip="round" role="radio" aria-checked="true">Round trip</button>
+          <button type="button" class="trip-pill" data-trip="one-way" role="radio" aria-checked="false">One way</button>
+        </div>
+
+        <div class="fields-row">
+
+          <div class="field" id="field-from">
+            <label class="field-label" for="input-from">Where from?</label>
+            <div class="field-input">
+              <svg class="icon icon-pin icon-green" viewBox="0 0 24 24" fill="none"><path d="M12 22s7-7.58 7-13A7 7 0 0 0 5 9c0 5.42 7 13 7 13Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><circle cx="12" cy="9" r="2.5" stroke="currentColor" stroke-width="1.8"/></svg>
+              <input
+                id="input-from"
+                type="text"
+                autocomplete="off"
+                placeholder="City or address"
+                role="combobox"
+                aria-expanded="false"
+                aria-controls="list-from"
+                aria-autocomplete="list"
+              />
+              <button type="button" class="field-clear" data-clear="from" aria-label="Clear starting point" hidden>&times;</button>
+            </div>
+            <ul class="suggestions" id="list-from" role="listbox" hidden></ul>
+            <button type="button" class="current-loc-btn" id="use-current-location">
+              <svg class="icon" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.8"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+              Use current location
+            </button>
+          </div>
+
+          <button type="button" class="swap-btn" id="swap-btn" aria-label="Swap starting point and destination">
+            <svg class="icon" viewBox="0 0 24 24" fill="none"><path d="M7 7h12m0 0-4-4m4 4-4 4M17 17H5m0 0 4 4m-4-4 4-4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+
+          <div class="field" id="field-to">
+            <label class="field-label" for="input-to">Where to?</label>
+            <div class="field-input">
+              <svg class="icon icon-pin icon-red" viewBox="0 0 24 24" fill="none"><path d="M12 22s7-7.58 7-13A7 7 0 0 0 5 9c0 5.42 7 13 7 13Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><circle cx="12" cy="9" r="2.5" stroke="currentColor" stroke-width="1.8"/></svg>
+              <input
+                id="input-to"
+                type="text"
+                autocomplete="off"
+                placeholder="Miami, Morocco…"
+                role="combobox"
+                aria-expanded="false"
+                aria-controls="list-to"
+                aria-autocomplete="list"
+              />
+              <button type="button" class="field-clear" data-clear="to" aria-label="Clear destination" hidden>&times;</button>
+            </div>
+            <ul class="suggestions" id="list-to" role="listbox" hidden></ul>
+          </div>
+
+        </div>
+
+        <button type="button" class="btn btn-start" id="start-btn">
+          <svg class="icon" viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/><path d="m21 21-4.3-4.3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+          Start Walking
+        </button>
+
+      </section>
+
+      <div class="result-panel" id="result-panel" hidden role="status"></div>
+    </main>
+
+  </div>
+
+  <script src="https://files.worldwind.arc.nasa.gov/artifactory/web/0.9.0/worldwind.min.js"></script>
+  <script src="/static/js/globe.js"></script>
+  <script src="/static/js/app.js"></script>
+</body>
+</html>

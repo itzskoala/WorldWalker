@@ -10,3 +10,4 @@ service-account.json
 notes.txt
 Codelab.http
 *.db
+.env

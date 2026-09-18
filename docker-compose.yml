@@ -1,0 +1,27 @@
+# docker-compose.yml
+# Local dev/test Postgres only - not used in production (a real deployment
+# points DATABASE_URL at a managed Postgres instance instead). Reads
+# POSTGRES_* from .env automatically (docker compose's default behavior
+# for a .env file next to this one - see database/session.py for how the
+# app itself reads DATABASE_URL/TEST_DATABASE_URL from the same file).
+#
+# Usage: docker compose up -d
+# worldwalker_test (used by the test suite) isn't created by this file -
+# it's a second database inside this same server, created once with:
+#   docker exec worldwalker-postgres psql -U $POSTGRES_USER -d $POSTGRES_DB -c "CREATE DATABASE worldwalker_test;"
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: worldwalker-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "5432:5432"
+    volumes:
+      - worldwalker-postgres-data:/var/lib/postgresql/data
+
+volumes:
+  worldwalker-postgres-data:

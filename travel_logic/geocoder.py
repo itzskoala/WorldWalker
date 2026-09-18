@@ -3,7 +3,7 @@
 # Maps later) can be swapped without touching callers.
 
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import List, Optional
 import requests
 from travel_logic.coordinates import Coordinates
 
@@ -22,6 +22,14 @@ class Geocoder(ABC):
         """City-tier name only (not town/village/hamlet/county) - None if
         this point isn't actually in a city. Used to filter route samples
         down to real, "important" places instead of every nearby dot."""
+
+    @abstractmethod
+    def search_places(self, query: str, limit: int = 5) -> List[str]:
+        """Candidate place names for a live autocomplete dropdown, e.g.
+        "ariz" -> ["Arizona, United States", ...]. Best-effort: returns []
+        on a too-short query or a provider error rather than raising -
+        callers are typing UIs, not journey-starting flows (that's still
+        geocode(), which does raise)."""
 
 
 class NominatimGeocoder(Geocoder):
@@ -69,3 +77,21 @@ class NominatimGeocoder(Geocoder):
         )
         resp.raise_for_status()
         return resp.json().get("address", {}).get("city")
+
+    def search_places(self, query: str, limit: int = 5) -> List[str]:
+        # None shows up for real: a UI Dropdown fires its "typing" event
+        # with an empty/None value on focus, before any character is
+        # typed - skip it the same as a too-short query, not an error.
+        if not query or len(query.strip()) < 2:
+            return []
+        try:
+            resp = requests.get(
+                f"{self.BASE_URL}/search",
+                params={"q": query, "format": "json", "limit": limit},
+                headers=self.HEADERS,
+                timeout=5,
+            )
+            resp.raise_for_status()
+            return [result["display_name"] for result in resp.json()]
+        except requests.RequestException:
+            return []

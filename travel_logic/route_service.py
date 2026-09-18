@@ -1,6 +1,8 @@
 #route_service.py
-# Walking route between two coordinates: ordered points with cumulative
-# distance, so progress_calculator can place a user "at mile X" later.
+# Walking route between two coordinates: ordered points, each carrying its
+# distance (in meters) from the start, from the destination, and to its
+# immediate neighbors - so progress_calculator can place a user at a given
+# distance along the route later.
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -8,26 +10,31 @@ from math import radians, sin, cos, asin, sqrt
 import requests
 from travel_logic.coordinates import Coordinates
 
-EARTH_RADIUS_MILES = 3958.8
+EARTH_RADIUS_METERS = 6371000.0
 
 
-def haversine_miles(a: Coordinates, b: Coordinates) -> float:
+def haversine_meters(a: Coordinates, b: Coordinates) -> float:
     lat1, lng1, lat2, lng2 = map(radians, (a.lat, a.lng, b.lat, b.lng))
     d_lat, d_lng = lat2 - lat1, lng2 - lng1
     h = sin(d_lat / 2) ** 2 + cos(lat1) * cos(lat2) * sin(d_lng / 2) ** 2
-    return 2 * EARTH_RADIUS_MILES * asin(sqrt(h))
+    return 2 * EARTH_RADIUS_METERS * asin(sqrt(h))
 
 
 @dataclass(frozen=True)
 class RoutePoint:
     coords: Coordinates
-    miles_from_start: float
+    point_number: int  # 1-indexed position along the route: start is 1
+    distance_from_start: float
+    distance_to_destination: float
+    distance_to_previous: float  # 0 for the first point - no previous point
+    distance_to_next: float  # 0 for the last point - no next point
 
 
 @dataclass(frozen=True)
 class Route:
     points: list  # list[RoutePoint], ordered start -> destination
-    total_miles: float
+    total_distance: float
+    point_count: int  # how many points make up the route, start through destination
 
 
 class RouteService(ABC):
@@ -51,10 +58,28 @@ class OSRMWalkingRouteService(RouteService):
         raw_coords = data["routes"][0]["geometry"]["coordinates"]
         coords = [Coordinates(lat=lat, lng=lng) for lng, lat in raw_coords]
 
-        points, cumulative = [], 0.0
-        for i, c in enumerate(coords):
-            if i > 0:
-                cumulative += haversine_miles(coords[i - 1], c)
-            points.append(RoutePoint(coords=c, miles_from_start=cumulative))
+        # gaps[i] = distance from coords[i] to coords[i + 1]; the last point
+        # has no next point, so its gap is 0.
+        gaps = []
+        for i in range(len(coords) - 1):
+            gaps.append(haversine_meters(coords[i], coords[i + 1]))
+        gaps.append(0.0)
 
-        return Route(points=points, total_miles=cumulative)
+        total_distance = sum(gaps)
+
+        points = []
+        distance_from_start = 0.0
+        for i, c in enumerate(coords):
+            distance_to_previous = gaps[i - 1] if i > 0 else 0.0
+            distance_to_next = gaps[i]
+            points.append(RoutePoint(
+                coords=c,
+                point_number=i + 1,
+                distance_from_start=distance_from_start,
+                distance_to_destination=total_distance - distance_from_start,
+                distance_to_previous=distance_to_previous,
+                distance_to_next=distance_to_next,
+            ))
+            distance_from_start += distance_to_next
+
+        return Route(points=points, total_distance=total_distance, point_count=len(points))

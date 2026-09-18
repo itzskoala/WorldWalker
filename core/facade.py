@@ -4,6 +4,7 @@
 # pipeline from callers (app.py, fitbit_service.py).
 
 from datetime import datetime, timezone
+from travel_logic.coordinates import Coordinates
 from travel_logic.geocoder import NominatimGeocoder
 from travel_logic.route_service import OSRMWalkingRouteService
 from travel_logic.progress_calculator import (
@@ -42,7 +43,7 @@ class TravelFacade:
         for event_type in ("landmark", "halfway", "finished"):
             self.events.subscribe(event_type, console_listener)
 
-    def start_journey(self, user_id: str, from_place: str, to_place: str, gender: str = None, stride_length_m: float = None) -> dict:
+    def start_journey(self, user_id: str, from_place: str, to_place: str, gender: str = None, stride_length_m: float = None, round_trip: bool = False) -> dict:
         start = self._geocoder.geocode(from_place)
         end = self._geocoder.geocode(to_place)
         route = self._router.get_walking_route(start, end)
@@ -57,6 +58,12 @@ class TravelFacade:
             "workout_intervals": [],  # (start_time, end_time) already credited by record_workout
             "destination": to_place,  # for the "finished" event's message
             "milestones_notified": set(),  # {"halfway", "finished"} once each has fired - never re-fires
+            # Captured from the UI's trip-type toggle; not acted on yet -
+            # the route below is still a single one-way leg. A real
+            # "walk back" pipeline (doubling the route once the
+            # destination is reached) is a flagged fast-follow, not built
+            # this pass.
+            "round_trip": round_trip,
         }
         # Landmarks are found once here and persisted - LandmarksDB is the
         # single source of truth for them from here on, not the session dict.
@@ -208,15 +215,21 @@ class TravelFacade:
             "landmarks": landmarks,
         }
 
+    def search_places(self, query: str, limit: int = 5) -> list:
+        """Autocomplete candidates for app.py's Where From/Where To
+        dropdowns. Thin passthrough to the geocoder - kept here (not
+        called directly by app.py) so the UI only ever talks to the
+        facade, matching this module's "single entry point" role."""
+        return self._geocoder.search_places(query, limit)
+
+    def current_location_place(self, lat: float, lng: float) -> str:
+        """Browser-geolocation coordinates -> a place name app.py can drop
+        straight into the Where From field."""
+        return self._geocoder.reverse_geocode(Coordinates(lat=lat, lng=lng))
+
     @staticmethod
     def _locate(session: dict):
         return locate_on_route(session["route"], session["miles_walked"])
-
-
-# Single-user MVP, no auth/session system yet - matches the Google Health
-# API's own "users/me" convention. Becomes a real per-session id once
-# multi-user auth exists.
-DEFAULT_USER_ID = "me"
 
 # One shared instance for the whole process - fitbit_service.py's webhook
 # and app.py's routes both need the same in-memory session state/db handle.
