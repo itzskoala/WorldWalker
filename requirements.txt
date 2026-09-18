@@ -1,4 +1,5 @@
 fastapi
+jinja2
 pydantic
 uvicorn
 pytest
@@ -6,3 +7,8 @@ httpx
 pytest-httpx
 google-auth
 requests
+sqlalchemy
+psycopg[binary]
+alembic
+python-dotenv
+cryptography

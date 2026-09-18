@@ -9,3 +9,5 @@ service-account.json
 .tokens.json
 notes.txt
 Codelab.http
+*.db
+.env

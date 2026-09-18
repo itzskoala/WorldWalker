@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-# auth_setup/register_webhook_subscription.py
+# auth/register_webhook_subscription.py
 # Re-runnable: run once you have service-account.json (see plan doc for
 # the manual Cloud Console steps) and a public webhook URL (e.g. ngrok).
 # Safe to re-run every time that URL changes (ngrok rotates it on restart).
-#   venv/bin/python3 auth_setup/register_webhook_subscription.py <public-https-url> <gcp-project-id>
+#   venv/bin/python3 auth/register_webhook_subscription.py <public-https-url> <gcp-project-id>
 #
 # Auth: uses the broad "cloud-platform" scope, same pattern as the Cloud
 # Healthcare API (same family of Google Cloud API - project-scoped
@@ -20,9 +20,9 @@
 #      without this, creating the per-user subscription 400s as
 #      FAILED_PRECONDITION.
 #   2. A per-user Subscription resource, keyed by healthUserId (from
-#      services.google_health_client.get_health_user_id, which needs the
-#      .profile.readonly scope - rerun auth_setup/authorize.py if that scope
-#      was added after you'd already authorized).
+#      services.google_health.client.get_health_user_id, which needs the
+#      .profile.readonly scope - reconnect via the site's Connect button if
+#      that scope was added after you'd already authorized).
 #
 # Re-running: an earlier version of this script deleted the subscriber
 # before recreating it, which 400s (FAILED_PRECONDITION) once a manual
@@ -39,7 +39,7 @@ import google.auth.transport.requests
 from google.oauth2 import service_account
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # so `services` is importable
-from services.google_health_client import get_health_user_id
+from services.google_health.client import get_health_user_id
 
 ROOT = Path(__file__).resolve().parent.parent
 SERVICE_ACCOUNT_PATH = ROOT / "service-account.json"
@@ -116,6 +116,6 @@ def register(public_url: str, project_id: str):
 
 if __name__ == "__main__":
     if len(sys.argv) != 3:
-        print("Usage: python3 auth_setup/register_webhook_subscription.py <public-https-url> <gcp-project-id>")
+        print("Usage: python3 auth/register_webhook_subscription.py <public-https-url> <gcp-project-id>")
         sys.exit(1)
     register(sys.argv[1], sys.argv[2])
