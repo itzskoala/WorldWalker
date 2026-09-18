@@ -11,3 +11,6 @@ notes.txt
 Codelab.http
 *.db
 .env
+.vercel
+.env*
+node_modules/
