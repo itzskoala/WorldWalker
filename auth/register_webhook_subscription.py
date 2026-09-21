@@ -30,21 +30,25 @@
 # subscriber with active child subscriptions. PATCH-if-exists avoids that
 # entirely.
 
+import os
 import sys
 import json
 from pathlib import Path
 
 import httpx
 import google.auth.transport.requests
+from dotenv import load_dotenv
 from google.oauth2 import service_account
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # so `services` is importable
 from services.google_health.client import get_health_user_id
 
+load_dotenv()
+
 ROOT = Path(__file__).resolve().parent.parent
 SERVICE_ACCOUNT_PATH = ROOT / "service-account.json"
 SUBSCRIBER_ID = "worldwalker"
-WEBHOOK_SECRET = "Bearer MySuperSecureSecretToken"  # must match services/fitbit_service.py
+WEBHOOK_SECRET = os.environ["WEBHOOK_SECRET"]  # must match services/google_health/webhook.py
 AUTOMATIC_DATA_TYPES = ["steps", "exercise", "heart-rate"]
 MANUAL_DATA_TYPES = ["sleep"]
 

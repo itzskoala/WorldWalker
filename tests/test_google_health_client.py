@@ -5,6 +5,8 @@
 # how a valid token gets produced (that's auth/connections.py's job,
 # proven against real Postgres in tests/test_connections.py).
 
+import json
+
 import httpx
 import pytest
 
@@ -65,6 +67,39 @@ def test_get_data_points_forces_a_refresh_and_retries_once_on_401(monkeypatch, h
     assert calls == [False, True]
 
 
+def test_get_data_points_follows_pagination_across_multiple_pages(monkeypatch, httpx_mock):
+    monkeypatch.setattr(google_health_client, "_current_access_token", lambda force_refresh=False: "AT")
+    httpx_mock.add_response(json={"dataPoints": [{"count": "1"}], "nextPageToken": "page-2"})
+    httpx_mock.add_response(json={"dataPoints": [{"count": "2"}]})
+
+    points = google_health_client.get_data_points("steps", "a", "b")
+
+    assert points == [{"count": "1"}, {"count": "2"}]
+    requests = httpx_mock.get_requests()
+    assert "pageToken" not in requests[0].url.params
+    assert requests[1].url.params["pageToken"] == "page-2"
+
+
+def test_get_data_points_retries_on_401_on_a_later_page_not_just_the_first(monkeypatch, httpx_mock):
+    calls = []
+
+    def fake_token(force_refresh=False):
+        calls.append(force_refresh)
+        return "AT"
+
+    monkeypatch.setattr(google_health_client, "_current_access_token", fake_token)
+
+    httpx_mock.add_response(json={"dataPoints": [{"count": "1"}], "nextPageToken": "page-2"})
+    httpx_mock.add_response(status_code=401)
+    httpx_mock.add_response(json={"dataPoints": [{"count": "2"}]})
+
+    points = google_health_client.get_data_points("steps", "a", "b")
+
+    assert points == [{"count": "1"}, {"count": "2"}]
+    # page 1 used the cached token; page 2's 401 forced its own refresh-retry.
+    assert calls == [False, False, True]
+
+
 def test_camel_case_hyphenated_and_plain():
     assert google_health_client._camel_case("heart-rate") == "heartRate"
     assert google_health_client._camel_case("steps") == "steps"
@@ -119,6 +154,59 @@ def test_get_data_points_exercise_keeps_a_point_with_no_interval_rather_than_dro
     points = google_health_client.get_data_points("exercise", "2026-09-08T17:08:14Z", "2026-09-08T17:14:37Z")
 
     assert len(points) == 1
+
+
+def test_roll_up_posts_a_single_window_covering_the_whole_range(monkeypatch, httpx_mock):
+    monkeypatch.setattr(google_health_client, "_current_access_token", lambda force_refresh=False: "AT")
+    httpx_mock.add_response(json={"rollupDataPoints": [{"steps": {"countSum": "10"}}]})
+
+    points = google_health_client.roll_up("steps", "2026-09-01T00:00:00Z", "2026-09-01T01:00:00Z")
+
+    assert points == [{"steps": {"countSum": "10"}}]
+    request = httpx_mock.get_requests()[0]
+    assert request.method == "POST"
+    body = json.loads(request.content)
+    assert body == {
+        "range": {"startTime": "2026-09-01T00:00:00Z", "endTime": "2026-09-01T01:00:00Z"},
+        "windowSize": "3600s",
+    }
+
+
+def test_roll_up_retries_once_on_401(monkeypatch, httpx_mock):
+    calls = []
+    monkeypatch.setattr(google_health_client, "_current_access_token", lambda force_refresh=False: calls.append(force_refresh) or "AT")
+
+    httpx_mock.add_response(status_code=401)
+    httpx_mock.add_response(json={"rollupDataPoints": []})
+
+    google_health_client.roll_up("steps", "2026-09-01T00:00:00Z", "2026-09-01T01:00:00Z")
+
+    assert calls == [False, True]
+
+
+def test_get_steps_total_sums_count_sum_across_buckets(monkeypatch, httpx_mock):
+    monkeypatch.setattr(google_health_client, "_current_access_token", lambda force_refresh=False: "AT")
+    httpx_mock.add_response(json={"rollupDataPoints": [{"steps": {"countSum": "700"}}, {"steps": {"countSum": "300"}}]})
+
+    assert google_health_client.get_steps_total("2026-09-01T00:00:00Z", "2026-09-01T01:00:00Z") == 1000
+
+
+def test_get_heart_rate_summary_returns_avg_min_max(monkeypatch, httpx_mock):
+    monkeypatch.setattr(google_health_client, "_current_access_token", lambda force_refresh=False: "AT")
+    httpx_mock.add_response(json={
+        "rollupDataPoints": [{"heartRate": {"beatsPerMinuteAvg": 65.0, "beatsPerMinuteMin": 50, "beatsPerMinuteMax": 140}}]
+    })
+
+    summary = google_health_client.get_heart_rate_summary("2026-09-01T00:00:00Z", "2026-09-01T01:00:00Z")
+
+    assert summary == {"avg_bpm": 65.0, "min_bpm": 50, "max_bpm": 140}
+
+
+def test_get_heart_rate_summary_returns_empty_dict_with_no_data(monkeypatch, httpx_mock):
+    monkeypatch.setattr(google_health_client, "_current_access_token", lambda force_refresh=False: "AT")
+    httpx_mock.add_response(json={"rollupDataPoints": []})
+
+    assert google_health_client.get_heart_rate_summary("2026-09-01T00:00:00Z", "2026-09-01T01:00:00Z") == {}
 
 
 def test_get_profile_returns_json(monkeypatch, httpx_mock):

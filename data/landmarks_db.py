@@ -55,14 +55,15 @@ class LandmarksDB:
     def _connect(self):
         return sqlite3.connect(self._db_path)
 
-    def save_landmarks(self, user_id: str, checkpoints: list) -> None:
+    def save_landmarks(self, user_id: str, landmarks: list) -> None:
         """Replaces any prior landmark set for this user - called once,
-        right after a route is built."""
+        right after a route is built. landmarks: dicts with name, coords
+        ({lat, lng}), miles_from_start, percent."""
         with self._connect() as conn:
             conn.execute(CLEAR_FOR_USER_SQL, (user_id,))
             conn.executemany(
                 INSERT_SQL,
-                [(user_id, c.name, c.coords.lat, c.coords.lng, c.miles_from_start, c.percent) for c in checkpoints],
+                [(user_id, l["name"], l["coords"]["lat"], l["coords"]["lng"], l["miles_from_start"], l["percent"]) for l in landmarks],
             )
 
     def all_landmarks(self, user_id: str) -> list:

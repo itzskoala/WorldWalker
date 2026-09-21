@@ -69,20 +69,15 @@ class ExerciseData(BaseModel):
 
 class UserData(BaseModel):
     """Profile pull (services.google_health.client.get_profile), not
-    webhook-driven - see that function's docstring. Documented fields are
-    limited to age + membership start date; NOT the classic Fitbit
-    gender/height/weight fields.
+    webhook-driven. Stride lengths confirmed live: real per-user values
+    from Profile > Google Health settings > Activity > Stride Length,
+    per activity type (not a single unisex figure).
 
-    stride_length_m: this IS real per-user data - the Google Health app
-    lets a user calibrate it under Profile > Google Health settings >
-    Activity > Stride Length (default estimated from height/weight/sex,
-    overridable with a measured value). Not confirmed to be exposed by the
-    v4 REST API's documented fields yet, though (getProfile only documents
-    age/memberSince, per get_profile()'s docstring) - needs a live
-    get_profile() probe to check for an undocumented field before this can
-    populate for real. Stays None until then; travel_logic falls back to a
-    gender average."""
+    member_since is unconfirmed/likely wrong - a live pull actually
+    returned membershipStartDate as {year, month, day}, not a memberSince
+    string; unused today, so left as-is rather than guessed again."""
     dataType: Literal["user"] = "user"
     age: Optional[int] = None
     member_since: Optional[str] = Field(default=None, alias="memberSince")
-    stride_length_m: Optional[float] = None
+    walking_stride_length_mm: Optional[float] = Field(default=None, alias="userConfiguredWalkingStrideLengthMm")
+    running_stride_length_mm: Optional[float] = Field(default=None, alias="userConfiguredRunningStrideLengthMm")

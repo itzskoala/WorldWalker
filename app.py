@@ -1,16 +1,8 @@
 # app.py
 # The web UI. Owns no travel/auth logic itself - every action here reports
 # to core.facade.travel_facade (journey state) or auth.google_health_auth
-# (the Fitbit/Google Health OAuth flow). Pure FastAPI + a static
-# Google-Flights-styled frontend (web/) - no UI framework dependency.
-#
-# core.facade / data.intake are currently mid-refactor on this branch and
-# don't import cleanly yet (see travel_logic/progress_calculator.py and
-# services/google_health/), so the journey-start endpoint below imports
-# them lazily, per-request, inside a try/except - the UI stays fully
-# operational (search, current location, Connect) even while that chain
-# is being rebuilt, and starts working the moment it imports cleanly again.
-# No further app.py changes needed when that lands.
+# (the Google Health OAuth flow). Pure FastAPI + a static Google-Flights-
+# styled frontend (web/) - no UI framework dependency.
 
 from pathlib import Path
 from typing import Optional
@@ -24,11 +16,17 @@ from starlette.requests import Request
 
 from travel_logic.coordinates import Coordinates
 from travel_logic.geocoder import NominatimGeocoder
+from auth.router import router as auth_router
+from services.google_health.webhook import router as webhook_router
+from data.intake import IntakeRequest, start_journey_from_intake
+from core.facade import DEFAULT_USER_ID
 
 ROOT = Path(__file__).resolve().parent
 WEB_DIR = ROOT / "web"
 
 app = FastAPI(title="WorldWalker")
+app.include_router(auth_router)
+app.include_router(webhook_router)
 app.mount("/static", StaticFiles(directory=WEB_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=WEB_DIR / "templates")
 
@@ -95,9 +93,6 @@ def start_journey(body: JourneyStartRequest):
         return JSONResponse({"error": "Pick both a starting point and a destination."}, status_code=400)
 
     try:
-        from data.intake import IntakeRequest, start_journey_from_intake
-        from core.facade import DEFAULT_USER_ID
-
         intake = IntakeRequest(
             from_place=body.from_place,
             to_place=body.to_place,
@@ -108,10 +103,10 @@ def start_journey(body: JourneyStartRequest):
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=400)
     except Exception as e:
-        # Journey logic is still being rebuilt on this branch - fail soft
-        # instead of a 500, so the UI can show a friendly "coming soon"
-        # message rather than a broken request.
-        print(f"⚠️  /api/journey/start: backend not wired up yet ({type(e).__name__}: {e})")
+        # Real external dependencies (geocoding, routing, AI descriptions)
+        # can fail at runtime - fail soft with a friendly message instead
+        # of a 500.
+        print(f"⚠️  /api/journey/start failed: {type(e).__name__}: {e}")
         return JSONResponse({"coming_soon": True}, status_code=200)
 
     return {
