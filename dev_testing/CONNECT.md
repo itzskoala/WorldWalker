@@ -5,11 +5,11 @@ pulls real data straight from Google Health.
 
 ## 1. Start the app
 ```bash
-venv/bin/python3 -m uvicorn app:app --reload
+venv/bin/python3 -m uvicorn app:app --reload --port 8010
 ```
 
 ## 2. Connect
-Open http://127.0.0.1:8000/ in your browser and click **Connect**. Approve
+Open http://127.0.0.1:8010/ in your browser and click **Connect**. Approve
 the Google consent screen (the 4 WorldWalker health scopes). You'll be
 redirected back to `/auth/google/callback`, which saves the connection to
 Postgres and bounces you back to `/`.
@@ -47,4 +47,4 @@ options.
   real-time push notifications, not a direct pull.
 - Empty results just mean Google Health has nothing in that window (e.g.
   no workout logged) - not a bug. Widen the window with `--hours`/`--start`/`--end`.
-- To disconnect: `curl -X POST http://127.0.0.1:8000/auth/google/disconnect`
+- To disconnect: `curl -X POST http://127.0.0.1:8010/auth/google/disconnect`

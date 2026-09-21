@@ -10,6 +10,7 @@ service-account.json
 notes.txt
 Codelab.http
 *.db
+data/geocode_cache.json
 .env
 .vercel
 .env*

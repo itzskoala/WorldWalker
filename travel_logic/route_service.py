@@ -37,6 +37,40 @@ class Route:
     point_count: int  # how many points make up the route, start through destination
 
 
+def build_route(coords: list[Coordinates]) -> Route:
+    """Turns an ordered list of Coordinates into a Route with every point's
+    distance bookkeeping filled in. Factored out of OSRMWalkingRouteService
+    below so a caller that already has the coordinates - e.g.
+    core/facade.py reloading a trip's stored route_geometry from the
+    database - can rebuild the exact same Route shape without a network
+    call back to OSRM."""
+    # gaps[i] = distance from coords[i] to coords[i + 1]; the last point has
+    # no next point, so its gap is 0.
+    gaps = []
+    for i in range(len(coords) - 1):
+        gaps.append(haversine_meters(coords[i], coords[i + 1]))
+    gaps.append(0.0)
+
+    total_distance = sum(gaps)
+
+    points = []
+    distance_from_start = 0.0
+    for i, c in enumerate(coords):
+        distance_to_previous = gaps[i - 1] if i > 0 else 0.0
+        distance_to_next = gaps[i]
+        points.append(RoutePoint(
+            coords=c,
+            point_number=i + 1,
+            distance_from_start=distance_from_start,
+            distance_to_destination=total_distance - distance_from_start,
+            distance_to_previous=distance_to_previous,
+            distance_to_next=distance_to_next,
+        ))
+        distance_from_start += distance_to_next
+
+    return Route(points=points, total_distance=total_distance, point_count=len(points))
+
+
 class RouteService(ABC):
     @abstractmethod
     def get_walking_route(self, start: Coordinates, end: Coordinates) -> Route:
@@ -58,28 +92,4 @@ class OSRMWalkingRouteService(RouteService):
         raw_coords = data["routes"][0]["geometry"]["coordinates"]
         coords = [Coordinates(lat=lat, lng=lng) for lng, lat in raw_coords]
 
-        # gaps[i] = distance from coords[i] to coords[i + 1]; the last point
-        # has no next point, so its gap is 0.
-        gaps = []
-        for i in range(len(coords) - 1):
-            gaps.append(haversine_meters(coords[i], coords[i + 1]))
-        gaps.append(0.0)
-
-        total_distance = sum(gaps)
-
-        points = []
-        distance_from_start = 0.0
-        for i, c in enumerate(coords):
-            distance_to_previous = gaps[i - 1] if i > 0 else 0.0
-            distance_to_next = gaps[i]
-            points.append(RoutePoint(
-                coords=c,
-                point_number=i + 1,
-                distance_from_start=distance_from_start,
-                distance_to_destination=total_distance - distance_from_start,
-                distance_to_previous=distance_to_previous,
-                distance_to_next=distance_to_next,
-            ))
-            distance_from_start += distance_to_next
-
-        return Route(points=points, total_distance=total_distance, point_count=len(points))
+        return build_route(coords)
