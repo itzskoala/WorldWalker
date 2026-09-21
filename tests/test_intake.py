@@ -3,12 +3,16 @@
 # TravelFacade.start_journey - no network calls, start_journey itself is
 # monkeypatched.
 
+import uuid
+
 from data.intake import IntakeRequest, start_journey_from_intake
 from data import intake as intake_module
 
+A_USER_ID = uuid.uuid4()
+
 
 def test_round_trip_defaults_to_false():
-    assert IntakeRequest(from_place="Miami", to_place="Chicago").round_trip is False
+    assert IntakeRequest(from_place="Miami", to_place="Chicago", user_id=A_USER_ID).round_trip is False
 
 
 def test_start_journey_from_intake_forwards_round_trip(monkeypatch):
@@ -17,7 +21,7 @@ def test_start_journey_from_intake_forwards_round_trip(monkeypatch):
         intake_module.travel_facade, "start_journey",
         lambda **kwargs: calls.append(kwargs) or {"ok": True},
     )
-    intake = IntakeRequest(from_place="Miami", to_place="Chicago", round_trip=True)
+    intake = IntakeRequest(from_place="Miami", to_place="Chicago", round_trip=True, user_id=A_USER_ID)
     result = start_journey_from_intake(intake)
 
     assert result == {"ok": True}

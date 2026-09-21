@@ -23,6 +23,8 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&family=Google+Sans+Text:wght@400;500;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/static/css/style.css" />
+
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" />
 </head>
 <body>
 
@@ -35,6 +37,13 @@
       </div>
 
       <div class="topbar-actions">
+        {% if is_connected %}
+        <button type="button" id="trips-btn" class="icon-btn" aria-label="Your trips" aria-haspopup="dialog" aria-expanded="false">
+          <svg class="icon" viewBox="0 0 24 24" fill="none"><path d="M4 6h16M4 12h16M4 18h10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+          <span class="icon-btn-badge" id="trips-btn-badge" hidden>0</span>
+        </button>
+        {% endif %}
+
         <button type="button" id="theme-toggle" class="theme-toggle" aria-label="Switch to light mode" aria-pressed="false">
           <span class="theme-toggle-track">
             <svg class="theme-toggle-icon theme-toggle-sun" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="4.5" stroke="currentColor" stroke-width="1.8"/><path d="M12 2.5v2.4M12 19.1v2.4M4.2 4.2l1.7 1.7M18.1 18.1l1.7 1.7M2.5 12h2.4M19.1 12h2.4M4.2 19.8l1.7-1.7M18.1 5.9l1.7-1.7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
@@ -45,14 +54,14 @@
 
         <a
           id="connect-btn"
-          class="btn btn-connect {{ 'is-disabled' if not connect_url else '' }}"
+          class="btn btn-connect {{ 'is-connected' if is_connected else ('is-disabled' if not connect_url else '') }}"
           href="{{ connect_url or '#' }}"
           target="_blank"
           rel="noopener"
-          {{ 'aria-disabled=true tabindex=-1' if not connect_url else '' }}
+          {{ 'aria-disabled=true tabindex=-1' if (is_connected or not connect_url) else '' }}
         >
           <svg class="icon" viewBox="0 0 24 24" fill="none"><path d="M12 2 4 5.5v6c0 5.05 3.4 9.77 8 11 4.6-1.23 8-5.95 8-11v-6L12 2Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="m9 12 2 2 4-4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
-          Connect
+          {{ 'Connected' if is_connected else 'Connect' }}
         </a>
       </div>
     </header>
@@ -131,14 +140,118 @@
         </button>
 
       </section>
-
-      <div class="result-panel" id="result-panel" hidden role="status"></div>
     </main>
+
+    <section class="trip-view" id="trip-view" hidden aria-label="Your walk">
+      <div class="trip-view-header">
+        <div class="trip-view-header-left">
+          {% if is_connected %}
+          <button type="button" id="trip-view-trips-btn" class="icon-btn" aria-label="Your trips" aria-haspopup="dialog" aria-expanded="false">
+            <svg class="icon" viewBox="0 0 24 24" fill="none"><path d="M4 6h16M4 12h16M4 18h10" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+          </button>
+          {% endif %}
+
+          <button type="button" class="trip-back-btn" id="trip-back-btn">
+            <svg class="icon" viewBox="0 0 24 24" fill="none"><path d="M19 12H5M11 6l-6 6 6 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span>Back</span>
+          </button>
+        </div>
+
+        <div class="trip-view-title">
+          <span id="trip-view-from">—</span>
+          <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none"><path d="M5 12h14m0 0-5-5m5 5-5 5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span id="trip-view-to">—</span>
+          <span class="trip-status-badge" id="trip-status-badge" hidden>Paused</span>
+        </div>
+
+        <button type="button" class="btn btn-pause" id="trip-pause-btn">
+          <svg class="icon icon-pause" viewBox="0 0 24 24" fill="none"><rect x="6" y="5" width="4" height="14" rx="1" fill="currentColor"/><rect x="14" y="5" width="4" height="14" rx="1" fill="currentColor"/></svg>
+          <svg class="icon icon-resume" viewBox="0 0 24 24" fill="none" hidden><path d="M7 5v14l12-7-12-7Z" fill="currentColor"/></svg>
+          <span class="trip-pause-label">Pause</span>
+        </button>
+      </div>
+
+      <div class="trip-map-wrap">
+        <div class="trip-map" id="trip-map"></div>
+        <div class="trip-map-loading" id="trip-map-loading">
+          <span class="spinner" id="trip-map-loading-spinner" aria-hidden="true"></span>
+          <svg class="trip-map-loading-error-icon" id="trip-map-loading-error-icon" viewBox="0 0 24 24" fill="none" hidden><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.8"/><path d="M12 8v5M12 16h.01" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+          <p id="trip-map-loading-text">Loading your walk…</p>
+        </div>
+      </div>
+
+      <div class="trip-metrics">
+        <div class="metric">
+          <span class="metric-value" id="metric-distance-walked">0.0 mi</span>
+          <span class="metric-label">Walked</span>
+        </div>
+        <div class="metric">
+          <span class="metric-value" id="metric-distance-left">0.0 mi</span>
+          <span class="metric-label">Left</span>
+        </div>
+        <div class="metric">
+          <span class="metric-value" id="metric-checkpoints">0 / 0</span>
+          <span class="metric-label">Checkpoints</span>
+        </div>
+        <div class="metric">
+          <span class="metric-value" id="metric-steps-today">0</span>
+          <span class="metric-label">Steps today</span>
+        </div>
+        <div class="metric">
+          <span class="metric-value" id="metric-steps-total">0</span>
+          <span class="metric-label">Total steps</span>
+        </div>
+        <div class="metric">
+          <span class="metric-value" id="metric-elapsed">0h 0m</span>
+          <span class="metric-label">Time walking</span>
+        </div>
+      </div>
+    </section>
+
+    <div class="trips-panel-backdrop" id="trips-panel-backdrop" hidden></div>
+
+    <aside class="trips-panel" id="trips-panel" hidden role="dialog" aria-modal="true" aria-label="Your trips">
+      <div class="trips-panel-header">
+        <h2>Your Trips</h2>
+        <button type="button" class="trips-panel-close" id="trips-panel-close" aria-label="Close trips panel">
+          <svg class="icon" viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+
+      <div class="trips-bulk-bar" id="trips-bulk-bar" hidden>
+        <span id="trips-bulk-count">0 selected</span>
+        <div class="trips-bulk-actions">
+          <button type="button" class="trips-bulk-btn" id="trips-bulk-cancel">Cancel</button>
+          <button type="button" class="trips-bulk-btn trips-bulk-btn-danger" id="trips-bulk-delete">
+            <svg class="icon icon-sm" viewBox="0 0 24 24" fill="none"><path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2m-9 0 1 12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            Delete
+          </button>
+        </div>
+      </div>
+
+      <div class="trips-panel-body" id="trips-panel-body">
+        <p class="trips-loading" id="trips-loading" hidden>Loading your trips…</p>
+
+        <section class="trips-group">
+          <h3 class="trips-group-title">Active</h3>
+          <ul class="trips-list" id="trips-list-active"></ul>
+          <p class="trips-empty" id="trips-empty-active" hidden>No active trips yet — start one to see it here.</p>
+        </section>
+
+        <section class="trips-group">
+          <h3 class="trips-group-title">Past</h3>
+          <ul class="trips-list" id="trips-list-past"></ul>
+          <p class="trips-empty" id="trips-empty-past" hidden>Finished trips will show up here.</p>
+        </section>
+      </div>
+    </aside>
 
   </div>
 
   <script src="https://files.worldwind.arc.nasa.gov/artifactory/web/0.9.0/worldwind.min.js"></script>
+  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
   <script src="/static/js/globe.js"></script>
+  <script src="/static/js/trip.js"></script>
   <script src="/static/js/app.js"></script>
 </body>
 </html>

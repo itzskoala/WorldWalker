@@ -4,13 +4,16 @@
 # real data for that interval and route it through the matching strategy.
 
 import os
+import uuid
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from fastapi.responses import Response
 
-from core.facade import travel_facade, DEFAULT_USER_ID
+from auth.connections import get_active_user_id
+from core.facade import travel_facade
+from database.session import SessionLocal
 from services.google_health.client import get_data_points
 from services.fitbitMetrics.fitbit_steps import StepsMetric
 from services.fitbitMetrics.fitbit_exercise import ExerciseMetric
@@ -25,7 +28,7 @@ BACKFILL_DATA_TYPES = ("steps", "exercise", "sleep", "heart-rate")
 router = APIRouter()
 
 
-def process_health_data(data_type: str, point: dict) -> None:
+def process_health_data(data_type: str, point: dict, user_id: uuid.UUID) -> None:
     """One real data point (already pulled) -> the matching strategy ->
     a typed object. Steps/exercise drive real travel progress (the
     database TravelFacade owns); sleep/heart-rate are printed structured -
@@ -35,7 +38,7 @@ def process_health_data(data_type: str, point: dict) -> None:
             obj = StepsMetric(point).metric_obj()
             print(f"👣 {obj.count} steps between {obj.interval.start_time} and {obj.interval.end_time}")
             try:
-                travel_facade.record_steps(DEFAULT_USER_ID, obj.count, obj.interval)
+                travel_facade.record_steps(user_id, obj.count, obj.interval)
             except ValueError as e:
                 print(f"❌ {e}")
 
@@ -43,7 +46,7 @@ def process_health_data(data_type: str, point: dict) -> None:
             obj = ExerciseMetric(point).metric_obj()
             print(f"🏃 {obj.exercise_type} logged. Steps tracked: {obj.metrics_summary.steps}")
             try:
-                travel_facade.record_workout(DEFAULT_USER_ID, obj)
+                travel_facade.record_workout(user_id, obj)
             except ValueError as e:
                 print(f"❌ {e}")
 
@@ -61,10 +64,20 @@ def process_health_data(data_type: str, point: dict) -> None:
 
 def process_notification(notification: dict) -> None:
     """A single {"dataType", "operation", "intervals": [...]} entry from
-    the webhook payload: pull the real data for each interval, then parse it."""
+    the webhook payload: pull the real data for each interval, then parse it.
+    Resolves the connected user once, up front - single-user MVP, so this is
+    always the same account Google is pushing data for. No connection yet
+    means there's no trip to credit, so the whole notification is skipped."""
     data_type = notification.get("dataType")
     if not data_type:
         print("❌ Notification missing dataType")
+        return
+
+    try:
+        with SessionLocal() as session:
+            user_id = get_active_user_id(session)
+    except RuntimeError as e:
+        print(f"❌ Skipping webhook notification - {e}")
         return
 
     for interval_wrapper in notification.get("intervals", []):
@@ -80,7 +93,7 @@ def process_notification(notification: dict) -> None:
             continue
 
         for point in points:
-            process_health_data(data_type, point)
+            process_health_data(data_type, point, user_id)
 
 
 def backfill_since(start_time: str, end_time: str = None) -> None:

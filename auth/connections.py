@@ -75,6 +75,15 @@ def get_active_connection(session: Session) -> GoogleHealthConnection:
     return connection
 
 
+def get_active_user_id(session: Session):
+    """The real WorldWalker User.id (UUID) behind the sole active Google
+    Health connection - the identity trips (database/trips.py) are keyed
+    on. Raises the same RuntimeError as get_active_connection() when
+    nobody's connected yet, since a trip can't be attached to a user_id
+    that doesn't exist."""
+    return get_active_connection(session).user_id
+
+
 def get_valid_access_token(session: Session, force_refresh: bool = False) -> str:
     """A currently-usable access token for the (sole) active connection,
     refreshing and persisting a new one first if the stored one is
