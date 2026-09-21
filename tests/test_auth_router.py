@@ -1,9 +1,9 @@
 # tests/test_auth_router.py
 # The OAuth callback route: must validate the CSRF `state` param before
 # ever exchanging a code, and must save a connection before reporting
-# success. Tested against its own minimal FastAPI app (not
-# services.fitbit_service.app) - the auth module shouldn't need Gradio or
-# the webhook secret pulled in just to test the callback.
+# success. Tested against its own minimal FastAPI app (not app.py) - the
+# auth module shouldn't need the webhook secret pulled in just to test
+# the callback.
 #
 # Persistence (auth/connections.py, database/session.py) is mocked out
 # here rather than hitting a real database - this file tests the

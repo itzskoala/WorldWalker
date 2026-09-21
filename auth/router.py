@@ -1,8 +1,8 @@
 # auth/router.py
 # The real OAuth callback: Google redirects the user's browser here
 # directly (no more copy/pasting a code out of the address bar). Included
-# into services/fitbit_service.py's FastAPI app - see that file's comment
-# on mount order.
+# into app.py's FastAPI app, alongside services/google_health/webhook.py's
+# router.
 #
 # Every dependency is called through its module object (google_health_auth,
 # connections) rather than imported by name, so tests can monkeypatch it -

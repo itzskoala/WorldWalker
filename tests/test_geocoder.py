@@ -1,8 +1,8 @@
 # tests/test_geocoder.py
 # NominatimGeocoder.search_places() - the live autocomplete used by
 # app.py's Where From/Where To dropdowns. No real network calls -
-# requests.get is monkeypatched, same pattern test_fitbit_service.py uses
-# for get_data_points.
+# requests.get is monkeypatched, same pattern test_google_health_webhook.py
+# uses for get_data_points.
 
 from travel_logic import geocoder as geocoder_module
 from travel_logic.geocoder import NominatimGeocoder
