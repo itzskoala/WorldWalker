@@ -4,32 +4,41 @@
 # tests get_data_points/get_profile/get_health_user_id's own logic, not
 # how a valid token gets produced (that's auth/connections.py's job,
 # proven against real Postgres in tests/test_connections.py).
+#
+# Every call below passes a user_id straight through to the mocked
+# _current_access_token - proving each pull is scoped to a specific
+# WorldWalker user, not an ambient/ shared token, is _current_access_token's
+# own job (it's a thin wrapper around auth/connections.py's already-scoped
+# get_valid_access_token) - not retested here.
 
 import json
+import uuid
 
 import httpx
 import pytest
 
 from services.google_health import client as google_health_client
 
+FAKE_USER_ID = uuid.uuid4()
+
 
 def test_get_data_points_returns_the_list(monkeypatch, httpx_mock):
-    monkeypatch.setattr(google_health_client, "_current_access_token", lambda force_refresh=False: "AT")
+    monkeypatch.setattr(google_health_client, "_current_access_token", lambda user_id, force_refresh=False: "AT")
     httpx_mock.add_response(json={"dataPoints": [{"count": "10"}]})
 
-    points = google_health_client.get_data_points("steps", "2026-09-01T00:00:00Z", "2026-09-01T01:00:00Z")
+    points = google_health_client.get_data_points("steps", "2026-09-01T00:00:00Z", "2026-09-01T01:00:00Z", FAKE_USER_ID)
 
     assert points == [{"count": "10"}]
 
 
 def test_get_data_points_unwraps_the_type_envelope(monkeypatch, httpx_mock):
     # Real shape: {"dataSource": {...}, "steps": {...}} - not flat.
-    monkeypatch.setattr(google_health_client, "_current_access_token", lambda force_refresh=False: "AT")
+    monkeypatch.setattr(google_health_client, "_current_access_token", lambda user_id, force_refresh=False: "AT")
     httpx_mock.add_response(json={
         "dataPoints": [{"dataSource": {"recordingMethod": "AUTOMATICALLY_RECORDED"}, "steps": {"count": "5"}}]
     })
 
-    points = google_health_client.get_data_points("steps", "2026-09-01T00:00:00Z", "2026-09-01T01:00:00Z")
+    points = google_health_client.get_data_points("steps", "2026-09-01T00:00:00Z", "2026-09-01T01:00:00Z", FAKE_USER_ID)
 
     assert points == [{"count": "5"}]
 
@@ -38,12 +47,12 @@ def test_get_data_points_unwraps_hyphenated_type(monkeypatch, httpx_mock):
     # "heart-rate" dataType -> "heartRate" envelope key (camelCase, like
     # every other field in the API's JSON body - confirmed against a real
     # response; distinct from the snake_case used in filter field names).
-    monkeypatch.setattr(google_health_client, "_current_access_token", lambda force_refresh=False: "AT")
+    monkeypatch.setattr(google_health_client, "_current_access_token", lambda user_id, force_refresh=False: "AT")
     httpx_mock.add_response(json={
         "dataPoints": [{"dataSource": {}, "heartRate": {"beatsPerMinute": "72"}}]
     })
 
-    points = google_health_client.get_data_points("heart-rate", "2026-09-01T00:00:00Z", "2026-09-01T01:00:00Z")
+    points = google_health_client.get_data_points("heart-rate", "2026-09-01T00:00:00Z", "2026-09-01T01:00:00Z", FAKE_USER_ID)
 
     assert points == [{"beatsPerMinute": "72"}]
 
@@ -51,7 +60,7 @@ def test_get_data_points_unwraps_hyphenated_type(monkeypatch, httpx_mock):
 def test_get_data_points_forces_a_refresh_and_retries_once_on_401(monkeypatch, httpx_mock):
     calls = []
 
-    def fake_token(force_refresh=False):
+    def fake_token(user_id, force_refresh=False):
         calls.append(force_refresh)
         return "AT"
 
@@ -60,7 +69,7 @@ def test_get_data_points_forces_a_refresh_and_retries_once_on_401(monkeypatch, h
     httpx_mock.add_response(status_code=401)
     httpx_mock.add_response(json={"dataPoints": []})
 
-    google_health_client.get_data_points("steps", "a", "b")
+    google_health_client.get_data_points("steps", "a", "b", FAKE_USER_ID)
 
     # First call uses the (possibly cached) token; the 401 forces exactly
     # one refresh-and-retry, not a loop.
@@ -68,11 +77,11 @@ def test_get_data_points_forces_a_refresh_and_retries_once_on_401(monkeypatch, h
 
 
 def test_get_data_points_follows_pagination_across_multiple_pages(monkeypatch, httpx_mock):
-    monkeypatch.setattr(google_health_client, "_current_access_token", lambda force_refresh=False: "AT")
+    monkeypatch.setattr(google_health_client, "_current_access_token", lambda user_id, force_refresh=False: "AT")
     httpx_mock.add_response(json={"dataPoints": [{"count": "1"}], "nextPageToken": "page-2"})
     httpx_mock.add_response(json={"dataPoints": [{"count": "2"}]})
 
-    points = google_health_client.get_data_points("steps", "a", "b")
+    points = google_health_client.get_data_points("steps", "a", "b", FAKE_USER_ID)
 
     assert points == [{"count": "1"}, {"count": "2"}]
     requests = httpx_mock.get_requests()
@@ -83,7 +92,7 @@ def test_get_data_points_follows_pagination_across_multiple_pages(monkeypatch, h
 def test_get_data_points_retries_on_401_on_a_later_page_not_just_the_first(monkeypatch, httpx_mock):
     calls = []
 
-    def fake_token(force_refresh=False):
+    def fake_token(user_id, force_refresh=False):
         calls.append(force_refresh)
         return "AT"
 
@@ -93,7 +102,7 @@ def test_get_data_points_retries_on_401_on_a_later_page_not_just_the_first(monke
     httpx_mock.add_response(status_code=401)
     httpx_mock.add_response(json={"dataPoints": [{"count": "2"}]})
 
-    points = google_health_client.get_data_points("steps", "a", "b")
+    points = google_health_client.get_data_points("steps", "a", "b", FAKE_USER_ID)
 
     assert points == [{"count": "1"}, {"count": "2"}]
     # page 1 used the cached token; page 2's 401 forced its own refresh-retry.
@@ -133,7 +142,7 @@ def test_get_data_points_exercise_drops_points_outside_the_requested_window(monk
     # civil_start_time only filters by calendar day, so a second workout
     # earlier the same day can come back too - narrowed down in code so a
     # later notification doesn't re-process (and double-count) it.
-    monkeypatch.setattr(google_health_client, "_current_access_token", lambda force_refresh=False: "AT")
+    monkeypatch.setattr(google_health_client, "_current_access_token", lambda user_id, force_refresh=False: "AT")
     httpx_mock.add_response(json={
         "dataPoints": [
             {"exercise": {"interval": {"startTime": "2026-09-08T07:00:00Z", "endTime": "2026-09-08T07:30:00Z"}, "exerciseType": "RUNNING"}},
@@ -141,26 +150,28 @@ def test_get_data_points_exercise_drops_points_outside_the_requested_window(monk
         ]
     })
 
-    points = google_health_client.get_data_points("exercise", "2026-09-08T17:08:14Z", "2026-09-08T17:14:37.662868023Z")
+    points = google_health_client.get_data_points(
+        "exercise", "2026-09-08T17:08:14Z", "2026-09-08T17:14:37.662868023Z", FAKE_USER_ID
+    )
 
     assert len(points) == 1
     assert points[0]["exerciseType"] == "WALKING"
 
 
 def test_get_data_points_exercise_keeps_a_point_with_no_interval_rather_than_drop_it(monkeypatch, httpx_mock):
-    monkeypatch.setattr(google_health_client, "_current_access_token", lambda force_refresh=False: "AT")
+    monkeypatch.setattr(google_health_client, "_current_access_token", lambda user_id, force_refresh=False: "AT")
     httpx_mock.add_response(json={"dataPoints": [{"exercise": {"exerciseType": "WALKING"}}]})
 
-    points = google_health_client.get_data_points("exercise", "2026-09-08T17:08:14Z", "2026-09-08T17:14:37Z")
+    points = google_health_client.get_data_points("exercise", "2026-09-08T17:08:14Z", "2026-09-08T17:14:37Z", FAKE_USER_ID)
 
     assert len(points) == 1
 
 
 def test_roll_up_posts_a_single_window_covering_the_whole_range(monkeypatch, httpx_mock):
-    monkeypatch.setattr(google_health_client, "_current_access_token", lambda force_refresh=False: "AT")
+    monkeypatch.setattr(google_health_client, "_current_access_token", lambda user_id, force_refresh=False: "AT")
     httpx_mock.add_response(json={"rollupDataPoints": [{"steps": {"countSum": "10"}}]})
 
-    points = google_health_client.roll_up("steps", "2026-09-01T00:00:00Z", "2026-09-01T01:00:00Z")
+    points = google_health_client.roll_up("steps", "2026-09-01T00:00:00Z", "2026-09-01T01:00:00Z", FAKE_USER_ID)
 
     assert points == [{"steps": {"countSum": "10"}}]
     request = httpx_mock.get_requests()[0]
@@ -174,64 +185,76 @@ def test_roll_up_posts_a_single_window_covering_the_whole_range(monkeypatch, htt
 
 def test_roll_up_retries_once_on_401(monkeypatch, httpx_mock):
     calls = []
-    monkeypatch.setattr(google_health_client, "_current_access_token", lambda force_refresh=False: calls.append(force_refresh) or "AT")
+    monkeypatch.setattr(
+        google_health_client, "_current_access_token", lambda user_id, force_refresh=False: calls.append(force_refresh) or "AT"
+    )
 
     httpx_mock.add_response(status_code=401)
     httpx_mock.add_response(json={"rollupDataPoints": []})
 
-    google_health_client.roll_up("steps", "2026-09-01T00:00:00Z", "2026-09-01T01:00:00Z")
+    google_health_client.roll_up("steps", "2026-09-01T00:00:00Z", "2026-09-01T01:00:00Z", FAKE_USER_ID)
 
     assert calls == [False, True]
 
 
 def test_get_steps_total_sums_count_sum_across_buckets(monkeypatch, httpx_mock):
-    monkeypatch.setattr(google_health_client, "_current_access_token", lambda force_refresh=False: "AT")
+    monkeypatch.setattr(google_health_client, "_current_access_token", lambda user_id, force_refresh=False: "AT")
     httpx_mock.add_response(json={"rollupDataPoints": [{"steps": {"countSum": "700"}}, {"steps": {"countSum": "300"}}]})
 
-    assert google_health_client.get_steps_total("2026-09-01T00:00:00Z", "2026-09-01T01:00:00Z") == 1000
+    assert google_health_client.get_steps_total("2026-09-01T00:00:00Z", "2026-09-01T01:00:00Z", FAKE_USER_ID) == 1000
 
 
 def test_get_heart_rate_summary_returns_avg_min_max(monkeypatch, httpx_mock):
-    monkeypatch.setattr(google_health_client, "_current_access_token", lambda force_refresh=False: "AT")
+    monkeypatch.setattr(google_health_client, "_current_access_token", lambda user_id, force_refresh=False: "AT")
     httpx_mock.add_response(json={
         "rollupDataPoints": [{"heartRate": {"beatsPerMinuteAvg": 65.0, "beatsPerMinuteMin": 50, "beatsPerMinuteMax": 140}}]
     })
 
-    summary = google_health_client.get_heart_rate_summary("2026-09-01T00:00:00Z", "2026-09-01T01:00:00Z")
+    summary = google_health_client.get_heart_rate_summary("2026-09-01T00:00:00Z", "2026-09-01T01:00:00Z", FAKE_USER_ID)
 
     assert summary == {"avg_bpm": 65.0, "min_bpm": 50, "max_bpm": 140}
 
 
 def test_get_heart_rate_summary_returns_empty_dict_with_no_data(monkeypatch, httpx_mock):
-    monkeypatch.setattr(google_health_client, "_current_access_token", lambda force_refresh=False: "AT")
+    monkeypatch.setattr(google_health_client, "_current_access_token", lambda user_id, force_refresh=False: "AT")
     httpx_mock.add_response(json={"rollupDataPoints": []})
 
-    assert google_health_client.get_heart_rate_summary("2026-09-01T00:00:00Z", "2026-09-01T01:00:00Z") == {}
+    assert google_health_client.get_heart_rate_summary("2026-09-01T00:00:00Z", "2026-09-01T01:00:00Z", FAKE_USER_ID) == {}
 
 
 def test_get_profile_returns_json(monkeypatch, httpx_mock):
-    monkeypatch.setattr(google_health_client, "_current_access_token", lambda force_refresh=False: "AT")
+    monkeypatch.setattr(google_health_client, "_current_access_token", lambda user_id, force_refresh=False: "AT")
     httpx_mock.add_response(json={"age": 31, "memberSince": "2021-02-10"})
 
-    profile = google_health_client.get_profile()
+    profile = google_health_client.get_profile(FAKE_USER_ID)
 
     assert profile == {"age": 31, "memberSince": "2021-02-10"}
 
 
-def test_get_health_user_id_uses_the_ambient_token_by_default(monkeypatch, httpx_mock):
-    monkeypatch.setattr(google_health_client, "_current_access_token", lambda force_refresh=False: "AT-from-db")
-    httpx_mock.add_response(json={"healthUserId": "abc123"}, match_headers={"Authorization": "Bearer AT-from-db"})
+def test_current_access_token_resolves_this_specific_users_token(monkeypatch):
+    # _current_access_token is the one seam every function above goes
+    # through - proving it passes the given user_id straight to
+    # connections.get_valid_access_token (not an ambient lookup) is
+    # enough; the scoping itself is proven in tests/test_connections.py.
+    from auth import connections
 
-    assert google_health_client.get_health_user_id() == "abc123"
+    calls = []
+    monkeypatch.setattr(
+        connections,
+        "get_valid_access_token",
+        lambda session, user_id, force_refresh=False: calls.append(user_id) or "AT",
+    )
+
+    token = google_health_client._current_access_token(FAKE_USER_ID)
+
+    assert token == "AT"
+    assert calls == [FAKE_USER_ID]
 
 
-def test_get_health_user_id_uses_an_explicit_token_when_given(monkeypatch, httpx_mock):
-    # Called right after exchange_code(), before any DB row exists to read
-    # an ambient token back out of - _current_access_token() must NOT be hit.
-    def fail_if_called(force_refresh=False):
-        raise AssertionError("should not read the ambient token when one was passed explicitly")
-
-    monkeypatch.setattr(google_health_client, "_current_access_token", fail_if_called)
+def test_get_health_user_id_uses_the_given_access_token(monkeypatch, httpx_mock):
+    # Always called with an explicit access_token, right after
+    # exchange_code() - before any DB row (and so any user_id) exists yet
+    # to look one up by.
     httpx_mock.add_response(json={"healthUserId": "abc123"}, match_headers={"Authorization": "Bearer just-exchanged"})
 
     result = google_health_client.get_health_user_id(access_token="just-exchanged")
@@ -239,15 +262,13 @@ def test_get_health_user_id_uses_an_explicit_token_when_given(monkeypatch, httpx
     assert result == "abc123"
 
 
-def test_get_health_user_id_does_not_retry_on_401_with_an_explicit_token(monkeypatch, httpx_mock):
-    # No refresh flow makes sense yet for a token that isn't persisted
-    # anywhere - an immediate 401 here means something is genuinely wrong,
-    # so it should surface as an error, not silently retry.
-    def fail_if_called(force_refresh=False):
-        raise AssertionError("should not attempt any refresh with an explicit token")
-
-    monkeypatch.setattr(google_health_client, "_current_access_token", fail_if_called)
+def test_get_health_user_id_does_not_retry_on_401(httpx_mock):
+    # No refresh flow makes sense for a token that isn't persisted
+    # anywhere - an immediate 401 here means something is genuinely
+    # wrong, so it should surface as an error, not silently retry.
     httpx_mock.add_response(status_code=401)
 
     with pytest.raises(httpx.HTTPStatusError):
         google_health_client.get_health_user_id(access_token="just-exchanged")
+
+    assert len(httpx_mock.get_requests()) == 1

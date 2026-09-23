@@ -10,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from auth.connections import get_active_connection
+from auth.connections import get_active_connection, get_active_user_id
 from database.session import SessionLocal
 from services.google_health import client
 from services.fitbitMetrics.fitbit_steps import StepsMetric
@@ -65,14 +65,15 @@ def main():
     args = _parse_args()
 
     with SessionLocal() as session:
-        connection = get_active_connection(session)
+        user_id = get_active_user_id(session)
+        connection = get_active_connection(session, user_id)
         print(f"connected: provider_user_id={connection.provider_user_id} status={connection.status}")
 
     start, end = _window(args)
     print(f"pulling {start} -> {end}\n")
 
-    steps_total = client.get_steps_total(start, end)
-    steps = _shaped(StepsMetric, client.get_data_points("steps", start, end))
+    steps_total = client.get_steps_total(start, end, user_id)
+    steps = _shaped(StepsMetric, client.get_data_points("steps", start, end, user_id))
     print(f"STEPS: {steps_total} total (server-side rollup), {len(steps)} raw data point(s)")
     for s in steps:
         print(f"  {s.count} steps  ({s.interval.start_time} -> {s.interval.end_time})")
@@ -84,18 +85,18 @@ def main():
     # Rollup summary, not raw samples: heart-rate is sampled every few
     # seconds, so pulling every point for a wide window means dozens of
     # paginated requests just to see a number - one rollup call instead.
-    hr_summary = client.get_heart_rate_summary(start, end)
+    hr_summary = client.get_heart_rate_summary(start, end, user_id)
     if hr_summary:
         print(f"HEART RATE: avg={hr_summary['avg_bpm']:.0f} bpm  min={hr_summary['min_bpm']:.0f}  max={hr_summary['max_bpm']:.0f}  (server-side rollup)")
     else:
         print("HEART RATE: no data in this window")
 
-    sleep = _shaped(SleepMetric, client.get_data_points("sleep", start, end))
+    sleep = _shaped(SleepMetric, client.get_data_points("sleep", start, end, user_id))
     print(f"\nSLEEP: {len(sleep)} session(s)  (minutesAsleep/minutesAwake only - Google Health has no sleep score field)")
     for s in sleep:
         print(f"  {s.summary.minutes_asleep} min asleep, {s.summary.minutes_awake} min awake  ({s.interval.start_time} -> {s.interval.end_time})")
 
-    exercise = _shaped(ExerciseMetric, client.get_data_points("exercise", start, end))
+    exercise = _shaped(ExerciseMetric, client.get_data_points("exercise", start, end, user_id))
     print(f"\nACTIVITY: {len(exercise)} session(s)")
     for e in exercise:
         summary = e.metrics_summary
@@ -107,7 +108,7 @@ def main():
         )
 
     try:
-        profile = UserMetric(client.get_profile()).metric_obj()
+        profile = UserMetric(client.get_profile(user_id)).metric_obj()
         print(f"\nPROFILE: age={profile.age} walking_stride_mm={profile.walking_stride_length_mm} running_stride_mm={profile.running_stride_length_mm}")
     except Exception as e:
         print(f"\nPROFILE: pull failed ({e})")

@@ -81,7 +81,7 @@ class TravelFacade:
         end = self._geocoder.geocode(to_place)
         route = self._router.get_walking_route(start, end)
 
-        stride_by_type = _real_stride_by_type()
+        stride_by_type = _real_stride_by_type(user_id)
         if stride_length_m is None:
             stride_length_m = stride_by_type.get("WALKING")
 
@@ -428,12 +428,12 @@ def _checkpoint_state(checkpoint: TripCheckpoint) -> dict:
     }
 
 
-def _real_stride_by_type() -> dict:
+def _real_stride_by_type(user_id: uuid.UUID) -> dict:
     """Real per-user stride from Google Health's profile (Profile >
     Google Health settings > Activity > Stride Length), confirmed live -
     empty if there's no connection yet or the pull fails, not a crash."""
     try:
-        profile = UserMetric(get_profile()).metric_obj()
+        profile = UserMetric(get_profile(user_id)).metric_obj()
     except Exception:
         return {}
 

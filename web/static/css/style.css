@@ -2,58 +2,63 @@
    globe as the header illustration, and a light/dark theme toggle. */
 
 :root {
-  /* Light theme (default) */
-  --bg: #f3f5f8;
-  --card-bg: rgba(255, 255, 255, 0.85);
-  --card-border: rgba(15, 23, 42, 0.08);
-  --field-bg: rgba(15, 23, 42, 0.04);
-  --field-bg-hover: rgba(15, 23, 42, 0.07);
-  --field-border: rgba(15, 23, 42, 0.14);
-  --suggestions-bg: #ffffff;
+  /* Light theme (default) - warm, outdoor-fitness palette: a cream
+     ground, deep charcoal ink, forest-teal as the one primary/brand
+     accent (movement, nature, progress), and a muted sky blue reserved
+     for maps/routes and secondary information - see web/static/css's
+     ".btn-start"/".btn-continue" (primary actions, green) vs
+     ".trip-walked-line"/map accents (blue) for that split in practice. */
+  --bg: #f7f4ee;
+  --card-bg: rgba(255, 253, 248, 0.86);
+  --card-border: rgba(38, 32, 23, 0.08);
+  --field-bg: rgba(38, 32, 23, 0.045);
+  --field-bg-hover: rgba(38, 32, 23, 0.075);
+  --field-border: rgba(38, 32, 23, 0.14);
+  --suggestions-bg: #fffdf9;
 
-  --ink: #1b1f24;
-  --ink-dim: #5f6368;
-  --ink-faint: #80868b;
+  --ink: #262420;
+  --ink-dim: #6b6860;
+  --ink-faint: #8c8a80;
 
-  --blue: #1a73e8;
-  --blue-soft: rgba(26, 115, 232, 0.1);
-  --green: #1e8e3e;
-  --green-soft: rgba(30, 142, 62, 0.1);
-  --red: #d93025;
-  --red-soft: rgba(217, 48, 37, 0.09);
-  --yellow: #f9a825;
-  --yellow-soft: rgba(249, 168, 37, 0.12);
+  --blue: #4f90ae;
+  --blue-soft: rgba(79, 144, 174, 0.12);
+  --green: #1f6f52;
+  --green-soft: rgba(31, 111, 82, 0.1);
+  --red: #c34b3a;
+  --red-soft: rgba(195, 75, 58, 0.09);
+  --yellow: #b8842a;
+  --yellow-soft: rgba(184, 132, 42, 0.12);
 
   --radius-lg: 28px;
   --radius-md: 16px;
   --radius-sm: 10px;
-  --shadow-card: 0 20px 50px -24px rgba(15, 23, 42, 0.35), 0 2px 8px rgba(15, 23, 42, 0.06);
-  --shadow-pop: 0 16px 36px -14px rgba(15, 23, 42, 0.28);
+  --shadow-card: 0 20px 50px -24px rgba(30, 26, 18, 0.32), 0 2px 8px rgba(30, 26, 18, 0.06);
+  --shadow-pop: 0 16px 36px -14px rgba(30, 26, 18, 0.26);
 
   color-scheme: light;
 }
 
 :root[data-theme="dark"] {
-  --bg: #0b0d10;
-  --card-bg: rgba(23, 25, 30, 0.72);
+  --bg: #100f0d;
+  --card-bg: rgba(24, 23, 20, 0.74);
   --card-border: rgba(255, 255, 255, 0.09);
   --field-bg: rgba(255, 255, 255, 0.06);
   --field-bg-hover: rgba(255, 255, 255, 0.1);
   --field-border: rgba(255, 255, 255, 0.14);
-  --suggestions-bg: #1c1f24;
+  --suggestions-bg: #1d1c19;
 
-  --ink: #e8eaed;
-  --ink-dim: #9aa0a6;
-  --ink-faint: #6b7076;
+  --ink: #ece9e2;
+  --ink-dim: #a29d92;
+  --ink-faint: #726d63;
 
-  --blue: #4285f4;
-  --blue-soft: rgba(66, 133, 244, 0.16);
-  --green: #34a853;
-  --green-soft: rgba(52, 168, 83, 0.16);
-  --red: #ea4335;
-  --red-soft: rgba(234, 67, 53, 0.16);
-  --yellow: #fbbc05;
-  --yellow-soft: rgba(251, 188, 5, 0.18);
+  --blue: #6fb3d6;
+  --blue-soft: rgba(111, 179, 214, 0.16);
+  --green: #37a878;
+  --green-soft: rgba(55, 168, 120, 0.16);
+  --red: #e2685a;
+  --red-soft: rgba(226, 104, 90, 0.16);
+  --yellow: #dba64c;
+  --yellow-soft: rgba(219, 166, 76, 0.18);
 
   --shadow-card: 0 24px 60px -20px rgba(0, 0, 0, 0.65), 0 2px 8px rgba(0, 0, 0, 0.35);
   --shadow-pop: 0 16px 40px -12px rgba(0, 0, 0, 0.55);
@@ -285,7 +290,7 @@ h2,
 .btn-connect {
   background: var(--blue);
   color: #ffffff;
-  box-shadow: 0 6px 18px -6px rgba(66, 133, 244, 0.55);
+  box-shadow: 0 6px 18px -6px rgba(79, 144, 174, 0.55);
 }
 
 .btn-connect:hover {
@@ -304,17 +309,22 @@ h2,
   background: var(--green);
   color: #ffffff;
   box-shadow: 0 6px 18px -6px rgba(30, 142, 62, 0.55);
-  cursor: default;
+  cursor: pointer;
+}
+
+.btn-connect.is-loading {
+  opacity: 0.6;
+  cursor: wait;
   pointer-events: none;
 }
 
 .btn-start {
-  background: var(--blue);
+  background: var(--green);
   color: #ffffff;
   font-size: 1.05rem;
   padding: 14px 30px;
   align-self: center;
-  box-shadow: 0 10px 26px -8px rgba(66, 133, 244, 0.6);
+  box-shadow: 0 10px 26px -8px rgba(31, 111, 82, 0.5);
 }
 
 .btn-start:hover {
@@ -355,7 +365,7 @@ h2,
 
 .globe-header {
   position: relative;
-  height: clamp(260px, 34vw, 420px);
+  height: clamp(220px, 28vw, 340px);
   overflow: hidden;
   background: #05070a;
 }
@@ -434,6 +444,135 @@ h2,
   display: flex;
   flex-direction: column;
   gap: 18px;
+}
+
+/* ---------- Activity card ("what have I done") ---------- */
+
+.activity-card {
+  position: relative;
+  z-index: 2;
+  width: 100%;
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-lg);
+  padding: 18px 22px;
+  margin-bottom: 14px;
+  backdrop-filter: blur(20px) saturate(1.3);
+  -webkit-backdrop-filter: blur(20px) saturate(1.3);
+  box-shadow: var(--shadow-card);
+}
+
+.activity-empty,
+.activity-lifetime {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 0.92rem;
+  color: var(--ink-dim);
+  text-align: center;
+}
+
+.activity-empty-icon,
+.activity-lifetime-icon {
+  font-size: 1.1rem;
+}
+
+.activity-lifetime strong {
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.activity-dot {
+  color: var(--ink-faint);
+}
+
+.activity-current {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.activity-current-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.activity-current-route {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-weight: 700;
+  font-size: 0.98rem;
+}
+
+.activity-current-route span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activity-current-route .icon-sm {
+  flex: none;
+  color: var(--ink-faint);
+}
+
+.activity-current-pct {
+  flex: none;
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--green);
+}
+
+/* Overrides .trip-card-progress's flex:1 (meant for a horizontal row of
+   stats) - here the bar is a column child, where flex:1 would grow it
+   tall instead of keeping it a thin 4px strip. */
+.activity-current .trip-card-progress {
+  flex: none;
+  width: 100%;
+}
+
+.activity-current-stats {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+  padding-top: 2px;
+}
+
+.btn-continue {
+  align-self: stretch;
+  justify-content: center;
+  background: var(--green);
+  color: #ffffff;
+  box-shadow: 0 8px 20px -8px rgba(31, 111, 82, 0.5);
+}
+
+.btn-continue:hover {
+  filter: brightness(1.08);
+}
+
+/* An active trip already claims the homescreen's one primary action
+   (the activity card's "Continue Walking" button above) - the
+   plan-a-walk card below it recedes to a secondary, still fully
+   functional, affordance rather than competing with it. */
+.search-card.is-secondary {
+  box-shadow: none;
+}
+
+.search-card.is-secondary .btn-start {
+  background: var(--field-bg);
+  color: var(--ink);
+  border: 1px solid var(--field-border);
+  box-shadow: none;
+}
+
+.search-card.is-secondary .btn-start:hover {
+  background: var(--field-bg-hover);
+  filter: none;
 }
 
 .trip-toggle {
@@ -1244,5 +1383,93 @@ h2,
 
   .trips-panel {
     width: 100vw;
+  }
+}
+
+/* ---------- Auth gate ---------- */
+
+.is-auth-pending {
+  visibility: hidden;
+}
+
+.auth-loading {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+}
+
+.auth-gate {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: var(--bg);
+}
+
+.auth-card {
+  width: 100%;
+  max-width: 380px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.auth-brand {
+  justify-content: center;
+}
+
+.auth-tabs {
+  align-self: stretch;
+}
+
+#auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.auth-error {
+  margin: 0;
+  padding: 10px 14px;
+  border-radius: var(--radius-sm);
+  background: var(--red-soft);
+  color: var(--red);
+  font-size: 0.85rem;
+}
+
+.auth-submit {
+  width: 100%;
+  justify-content: center;
+}
+
+/* ---------- User menu (topbar, once logged in) ---------- */
+
+.user-menu {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.user-email {
+  font-size: 0.85rem;
+  color: var(--ink-dim);
+  min-width: 0;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 720px) {
+  .user-email {
+    display: none;
   }
 }

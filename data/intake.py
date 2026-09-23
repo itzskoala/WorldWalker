@@ -14,7 +14,7 @@ class IntakeRequest(BaseModel):
     gender: Optional[Literal["male", "female"]] = None  # stride fallback if no real stride is on file
     stride_length_m: Optional[float] = None  # real per-user value, e.g. from Fitbit, if we have one
     round_trip: bool = False  # UI's trip-type toggle - see TravelFacade.start_journey's docstring
-    user_id: uuid.UUID  # the real, connected WorldWalker user - see auth.connections.get_active_user_id
+    user_id: uuid.UUID  # the logged-in WorldWalker user - see accounts.dependencies.get_current_user
 
 
 def start_journey_from_intake(intake: IntakeRequest) -> dict:

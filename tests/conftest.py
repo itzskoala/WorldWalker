@@ -93,15 +93,31 @@ def patched_session(db_session, monkeypatch):
     monkeypatch.setattr("core.facade.SessionLocal", same_session_every_time)
     monkeypatch.setattr("services.google_health.webhook.SessionLocal", same_session_every_time)
     monkeypatch.setattr("app.SessionLocal", same_session_every_time)
+    monkeypatch.setattr("accounts.dependencies.SessionLocal", same_session_every_time)
+    monkeypatch.setattr("accounts.router.SessionLocal", same_session_every_time)
     return db_session
+
+
+@pytest.fixture
+def auth_headers():
+    """auth_headers(user_id) -> an Authorization header for a valid access
+    token for that user - lets tests reach a JWT-protected route without
+    going through /auth/login."""
+    from accounts.security import create_access_token
+
+    def _headers(user_id: uuid.UUID) -> dict:
+        return {"Authorization": f"Bearer {create_access_token(str(user_id))}"}
+
+    return _headers
 
 
 @pytest.fixture
 def user_id(patched_session) -> uuid.UUID:
     """A bare WorldWalker User row - enough to own an ActiveTrip, but with
     no Google Health connection. Use connected_user_id instead for
-    anything that goes through auth.connections.get_active_user_id()
-    (app.py's endpoints, the webhook)."""
+    anything that needs a real GoogleHealthConnection (a webhook
+    notification naming this user's provider_user_id, auth/router.py's
+    disconnect, etc.)."""
     user = User()
     patched_session.add(user)
     patched_session.commit()
@@ -110,9 +126,10 @@ def user_id(patched_session) -> uuid.UUID:
 
 @pytest.fixture
 def connected_user_id(patched_session) -> uuid.UUID:
-    """A User with an active GoogleHealthConnection - what
-    auth.connections.get_active_user_id() needs to resolve a real user for
-    an incoming webhook notification or an app.py request."""
+    """A User with an active GoogleHealthConnection (provider_user_id
+    f"test-provider-{user_id}") - what a webhook notification's own
+    "user" field resolves through auth.connections.get_user_id_for_provider_user_id(),
+    or a real Google-Health-backed app.py/auth.router.py request needs."""
     user = User()
     patched_session.add(user)
     patched_session.flush()  # assigns user.id before the connection below references it

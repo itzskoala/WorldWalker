@@ -163,6 +163,29 @@ def test_locate_on_route_empty_route_raises_value_error():
         locate_on_route(Route(points=[], total_distance=0.0, point_count=0), 500.0)
 
 
+def test_locate_on_route_clamps_past_the_end_even_if_total_distance_overstates_the_last_point():
+    # Regression: route.total_distance and the last point's
+    # distance_from_start used to be computed independently (see
+    # build_route) and could disagree by a tiny float epsilon. Clamping
+    # distance_walked_m against the (larger) total_distance instead of the
+    # route's own last point pushed bisect_left past len(route.points),
+    # raising IndexError - reproduced here with total_distance
+    # deliberately overstated.
+    route = Route(
+        points=[
+            RoutePoint(Coordinates(41.80, -87.65), point_number=1, distance_from_start=0.0,
+                       distance_to_destination=1300.0, distance_to_previous=0.0, distance_to_next=1300.0),
+            RoutePoint(Coordinates(41.83, -87.60), point_number=2, distance_from_start=1300.0,
+                       distance_to_destination=0.0, distance_to_previous=1300.0, distance_to_next=0.0),
+        ],
+        total_distance=1300.0000000005,  # slightly more than the last point's distance_from_start
+        point_count=2,
+    )
+    progress = locate_on_route(route, 5_000_000.0)
+    assert progress.coords == Coordinates(41.83, -87.60)
+    assert progress.distance_walked_m == 1300.0
+
+
 # --- workout_distance_m ---
 
 def test_workout_distance_m_non_foot_type_never_counts():

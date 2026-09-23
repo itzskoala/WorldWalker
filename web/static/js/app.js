@@ -35,6 +35,57 @@
     applyTheme(currentTheme() === "light" ? "dark" : "light");
   });
 
+  // ---------- Google Health connect/disconnect ----------
+  // The connect button (web/templates/index.html's #connect-btn) always
+  // goes through window.Auth.apiFetch now, not a plain href - the OAuth
+  // consent URL is per-user (its state is bound to whoever's logged in,
+  // see auth/google_health_auth.py), so it has to come from an
+  // authenticated call (auth/router.py's POST /auth/google/start), not a
+  // link baked into the page before login. Once connected, that same
+  // element switches to a "Connected" pill - clicking it then disconnects
+  // (POST /auth/google/disconnect) instead.
+
+  const connectBtn = document.getElementById("connect-btn");
+  if (connectBtn) {
+    connectBtn.addEventListener("click", async (e) => {
+      e.preventDefault();
+
+      if (connectBtn.classList.contains("is-connected")) {
+        if (!window.confirm("Disconnect your Google Health account?")) return;
+
+        connectBtn.classList.add("is-loading");
+        try {
+          const res = await window.Auth.apiFetch("/auth/google/disconnect", { method: "POST" });
+          if (res.ok) {
+            window.location.reload();
+          } else {
+            console.warn("Disconnect failed:", res.status);
+          }
+        } catch (err) {
+          console.warn("Disconnect failed:", err);
+        } finally {
+          connectBtn.classList.remove("is-loading");
+        }
+        return;
+      }
+
+      connectBtn.classList.add("is-loading");
+      try {
+        const res = await window.Auth.apiFetch("/auth/google/start", { method: "POST" });
+        if (!res.ok) {
+          console.warn("Couldn't start the Google Health connection:", res.status);
+          return;
+        }
+        const { auth_url } = await res.json();
+        window.location.href = auth_url;
+      } catch (err) {
+        console.warn("Couldn't start the Google Health connection:", err);
+      } finally {
+        connectBtn.classList.remove("is-loading");
+      }
+    });
+  }
+
   // ---------- Trip type toggle ----------
 
   const tripPills = document.querySelectorAll(".trip-pill");
@@ -309,7 +360,7 @@
     window.TripView.showLoading(from, to);
 
     try {
-      const res = await fetch("/api/journey/start", {
+      const res = await window.Auth.apiFetch("/api/journey/start", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ from_place: from, to_place: to, round_trip: tripType() === "round" }),
@@ -464,7 +515,7 @@
     async function loadTrips() {
       tripsLoading.hidden = false;
       try {
-        const res = await fetch("/api/journey/list");
+        const res = await window.Auth.apiFetch("/api/journey/list");
         if (!res.ok) return;
         const data = await res.json();
         allTrips = data.trips || [];
@@ -478,7 +529,7 @@
 
     async function refreshTripsBadge() {
       try {
-        const res = await fetch("/api/journey/list");
+        const res = await window.Auth.apiFetch("/api/journey/list");
         if (!res.ok) return;
         const data = await res.json();
         const activeCount = (data.trips || []).filter((t) => ACTIVE_STATUSES.has(t.status)).length;
@@ -522,7 +573,7 @@
       if (!selectedTripIds.size) return;
       const tripIds = Array.from(selectedTripIds);
       try {
-        await fetch("/api/journey/delete", {
+        await window.Auth.apiFetch("/api/journey/delete", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ trip_ids: tripIds }),
@@ -552,14 +603,14 @@
         const action = actionBtn.dataset.action;
         if (action === "delete") {
           try {
-            await fetch(`/api/journey/${tripId}`, { method: "DELETE" });
+            await window.Auth.apiFetch(`/api/journey/${tripId}`, { method: "DELETE" });
           } catch (err) {
             console.warn("Delete failed:", err);
           }
           await loadTrips();
         } else if (action === "pause" || action === "resume") {
           try {
-            await fetch(`/api/journey/${tripId}/${action}`, { method: "POST" });
+            await window.Auth.apiFetch(`/api/journey/${tripId}/${action}`, { method: "POST" });
           } catch (err) {
             console.warn(`${action} failed:`, err);
           }
@@ -589,7 +640,11 @@
     tripsListActive.addEventListener("click", handleTripCardClick);
     tripsListPast.addEventListener("click", handleTripCardClick);
 
-    // Populate the topbar badge on first load, without opening the panel.
-    refreshTripsBadge();
+    // Populate the topbar badge once a session exists, without opening
+    // the panel - not unconditionally at script load, since at that
+    // point web/static/js/auth-ui.js hasn't finished deciding whether
+    // this page load even has a session yet (see its "ww:authenticated"
+    // dispatch in showApp()).
+    document.addEventListener("ww:authenticated", refreshTripsBadge);
   }
 })();
