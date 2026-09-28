@@ -44,7 +44,19 @@ def _sample_count(total_distance_m: float):
     return min(MAX_SAMPLES, int(CHECKPOINTS_PER_SQRT_KM * sqrt(total_distance_m / 1000)))
 
 
-def generate_checkpoints(route: Route, geocoder: Geocoder, describer: DescriptionGenerator):
+def generate_checkpoints_progressive(route: Route, geocoder: Geocoder, on_checkpoint_found) -> List[Checkpoint]:
+    """Same route-sampling/city-dedup loop as generate_checkpoints() below,
+    minus the AI description - on_checkpoint_found(checkpoint) fires the
+    instant each checkpoint's location is known (description=""), so a
+    caller can show/persist it right away instead of waiting for every
+    checkpoint AND every description down the whole route before any of it
+    is usable. See core/facade.py's generate_checkpoints_for_trip(), which
+    persists each checkpoint here immediately and kicks its description
+    generation off separately/concurrently rather than inline in this
+    loop - that's the one thing this is for.
+
+    Returns the same Checkpoint list generate_checkpoints() would (still
+    description="" - the caller decides what to do with descriptions)."""
     sample_count = _sample_count(route.total_distance)
     if sample_count < 1:
         return []  # too short a route to have any landmarks in between start/destination
@@ -66,11 +78,25 @@ def generate_checkpoints(route: Route, geocoder: Geocoder, describer: Descriptio
                 distance_from_start_m=point.distance_from_start,
                 distance_to_destination_m=round(route.total_distance - point.distance_from_start, 1),
             )
-            checkpoints.append(generate_description(checkpoint, describer))
+            checkpoints.append(checkpoint)
+            on_checkpoint_found(checkpoint)
         if city:
             last_city = city
 
     return checkpoints
+
+
+def generate_checkpoints(route: Route, geocoder: Geocoder, describer: DescriptionGenerator):
+    """The old all-at-once form: every checkpoint, fully described, in one
+    blocking call - still exactly what it always was for callers that want
+    that (tests, and database/trips.py's create_trip() when handed a
+    ready-made list). New, user-facing journey creation instead uses
+    generate_checkpoints_progressive() directly (see core/facade.py) so a
+    slow AI description never blocks discovering the next checkpoint down
+    the route."""
+    described = []
+    generate_checkpoints_progressive(route, geocoder, lambda checkpoint: described.append(generate_description(checkpoint, describer)))
+    return described
 
 
 def checkpoints_viewed(checkpoints: List[Checkpoint], distance_walked_m: float):
@@ -131,9 +157,13 @@ def generate_description(checkpoint: Checkpoint, describer: DescriptionGenerator
         f"interesting about {checkpoint.name}, located at "
         f"{checkpoint.coordinates.lat}, {checkpoint.coordinates.lng}. "
         )
+    # [TEMP DEBUG] remove before deploying - see notification-flow testing
+    print(f"📝 [TEMP DEBUG] generate_description() starting for checkpoint #{checkpoint.checkpoint_number} '{checkpoint.name}'")
     try:
         description = describer.generate(prompt)
-    except Exception:
+        print(f"📝 [TEMP DEBUG] generate_description() completed for '{checkpoint.name}': {description!r}")
+    except Exception as e:
         description = f"A stop along the way in {checkpoint.name}."
+        print(f"📝 [TEMP DEBUG] generate_description() failed for '{checkpoint.name}' ({type(e).__name__}: {e}) - using fallback: {description!r}")
 
     return replace(checkpoint, description=description)

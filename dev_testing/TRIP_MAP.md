@@ -1,8 +1,9 @@
 # Testing the trip map (dev test)
 
-Watches the live map (`web/static/js/trip.js`) update as a trip
-progresses, without waiting on a real Google Health sync. Assumes you've
-already connected once - see `CONNECT.md`.
+Watches the live map (`frontend/src/pages/TripDetailPage.tsx` +
+`frontend/src/components/tripMap.ts`) update as a trip progresses,
+without waiting on a real Google Health sync. Assumes you've already
+connected once - see `CONNECT.md`.
 
 ## 0. Postgres + migrations (only needed if it's not already running)
 
@@ -12,6 +13,14 @@ per-process dict, so it has to be up before the app will start cleanly.
 ```bash
 docker compose up -d                    # starts the local Postgres container
 venv/bin/python3 -m alembic upgrade head   # applies any pending schema migrations
+```
+
+app.py now serves the built frontend directly (`frontend/dist/`), not a
+template - build it once before step 1, and again after any frontend
+change:
+
+```bash
+cd frontend && npm install && npm run build && cd ..
 ```
 
 `docker compose up -d` is a no-op if the container's already running.
@@ -46,7 +55,7 @@ marker sitting right on the start pin. No checkpoint pins yet - that's
 expected, see below.
 
 A user can have several trips going at once now - starting another trip
-doesn't replace this one. Click the list icon in the topbar to see every
+doesn't replace this one. Click the Home tab to see every
 trip (Active/Past), pause or resume one, delete one, or click a card to
 open its map. Copy a trip's id from there (or from the `trip_id` field in
 the JSON below) for the `--trip-id` flag in step 5.
@@ -118,8 +127,8 @@ Trips are real database rows (`active_trips`/`trip_checkpoints`), not a
 per-process dict, so nothing is lost across a page reload or restarting
 `uvicorn`. Reloading the page always lands back on the search/home screen
 though, even mid-trip - with several trips possibly active at once there's
-no single "the" trip to jump back into automatically. Open the topbar's
-list icon and click the trip's card to get back to its map.
+no single "the" trip to jump back into automatically. Open the Home tab
+and click the trip's card to get back to its map.
 
 ## Notes
 

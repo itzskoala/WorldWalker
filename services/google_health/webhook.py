@@ -63,22 +63,22 @@ def process_health_data(data_type: str, point: dict, user_id: uuid.UUID) -> None
 
 
 def _provider_user_id(notification: dict) -> str | None:
-    """Which Google account this notification is about, in the "user":
-    "users/{healthUserId}" form Google's Health Connect Partner API sends
-    on every notification (same format auth/register_webhook_subscription.py
-    subscribes with) - the only identity a webhook ever carries, and how
-    it's mapped back to a specific WorldWalker user below."""
-    raw = notification.get("user")
-    if not raw:
-        return None
-    return raw.removeprefix("users/")
+    """Which Google account this notification is about - a plain
+    "healthUserId" string field, confirmed against a real production
+    payload and Google's own webhook docs (developers.google.com/health/webhooks).
+    NOT "user": "users/{healthUserId}" - that was this function's original,
+    never-actually-verified assumption; a real notification has no "user"
+    key and no "users/" prefix at all. This is the only identity a webhook
+    ever carries, and how it's mapped back to a specific WorldWalker user
+    below."""
+    return notification.get("healthUserId")
 
 
 def process_notification(notification: dict) -> None:
-    """A single {"dataType", "operation", "user", "intervals": [...]}
+    """A single {"dataType", "operation", "healthUserId", "intervals": [...]}
     entry from the webhook payload: resolve which WorldWalker user this
     Google account belongs to, then pull the real data for each interval
-    and parse it. No matching connection (or no "user" on the
+    and parse it. No matching connection (or no "healthUserId" on the
     notification at all) means there's no trip to credit, so the whole
     notification is skipped."""
     data_type = notification.get("dataType")
@@ -88,7 +88,7 @@ def process_notification(notification: dict) -> None:
 
     provider_user_id = _provider_user_id(notification)
     if provider_user_id is None:
-        print("❌ Notification missing a user - can't tell which WorldWalker account this belongs to")
+        print("❌ Notification missing a healthUserId - can't tell which WorldWalker account this belongs to")
         return
 
     try:
@@ -123,7 +123,7 @@ def backfill_since(provider_user_id: str, start_time: str, end_time: str = None)
     for data_type in BACKFILL_DATA_TYPES:
         process_notification({
             "dataType": data_type,
-            "user": f"users/{provider_user_id}",
+            "healthUserId": provider_user_id,
             "intervals": [{"physicalTimeInterval": {"startTime": start_time, "endTime": end_time}}],
         })
 

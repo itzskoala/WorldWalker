@@ -43,10 +43,24 @@ class AIDescriptionGenerator(DescriptionGenerator):
     DEFAULT_MODEL = "gpt-oss:20b"
 
     def __init__(self, api_key: str = None, model: str = DEFAULT_MODEL):
-        self._api_key = api_key or os.environ["OPENAI_API_KEY"]
+        # Resolved lazily in generate(), not here - core/facade.py builds
+        # one of these at import time (the module-level `travel_facade`
+        # singleton), so raising on a missing/bad key in __init__ would
+        # crash the whole app at startup instead of just this one
+        # checkpoint's description degrading to the fallback text (see
+        # travel_logic/checkpoints.py's generate_description(), which
+        # already wraps generate() in a try/except for exactly this).
+        self._api_key = api_key
         self._model = model
 
     def generate(self, prompt: str) -> str:
+        # OLLAMA_API_KEY, not OPENAI_API_KEY - this class calls Ollama
+        # Cloud (BASE_URL above), which 401s on an OpenAI-issued key.
+        # Create one at https://ollama.com/settings/keys - see .env.example.
+        api_key = self._api_key or os.environ.get("OLLAMA_API_KEY")
+        if not api_key:
+            raise RuntimeError("OLLAMA_API_KEY is not set - see .env.example.")
+
         resp = requests.post(
             self.BASE_URL,
             json={
@@ -55,7 +69,7 @@ class AIDescriptionGenerator(DescriptionGenerator):
                 "prompt": prompt,
                 "stream": False,
             },
-            headers={"Authorization": f"Bearer {self._api_key}"},
+            headers={"Authorization": f"Bearer {api_key}"},
             timeout=15,
         )
         resp.raise_for_status()

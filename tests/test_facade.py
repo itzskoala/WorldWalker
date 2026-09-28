@@ -14,7 +14,6 @@ import pytest
 
 from core.facade import TravelFacade, METERS_PER_MILE
 from core.observer_decorator.event_listener import EventListener
-from data.total_distance_db import TotalDistanceDB
 from database import trips
 from travel_logic.coordinates import Coordinates
 from travel_logic.route_service import EARTH_RADIUS_METERS, Route, RoutePoint
@@ -78,9 +77,8 @@ def _exercise(exercise_type, start, end, distance_mm=None, steps=None, avg_speed
 
 
 @pytest.fixture
-def facade(patched_session, user_id, seed_trip, tmp_path) -> TravelFacade:
+def facade(patched_session, user_id, seed_trip) -> TravelFacade:
     f = TravelFacade()
-    f._db = TotalDistanceDB(str(tmp_path / "test_total_distance.db"))
     seed_trip(user_id, _route(TOTAL_DISTANCE_M))
     return f
 
@@ -131,13 +129,12 @@ def test_record_steps_outside_any_workout_window_still_adds_distance(facade, use
     assert trip.meters_walked > meters_after_workout
 
 
-def test_each_trip_tracks_its_own_step_totals_independently(user_id, patched_session, seed_trip, tmp_path):
+def test_each_trip_tracks_its_own_step_totals_independently(user_id, patched_session, seed_trip):
     # Multi-trip fan-out (record_steps credits every active trip with the
     # same real step count) must never make one trip's "today's steps" /
     # "total steps" bleed into another's - each trip logs its own row in
     # data/total_distance_db.py, keyed by trip_id.
     f = TravelFacade()
-    f._db = TotalDistanceDB(str(tmp_path / "steps.db"))
     trip_a = seed_trip(user_id, _route(TOTAL_DISTANCE_M), to_place="Trip A")
     trip_b = seed_trip(user_id, _route(TOTAL_DISTANCE_M), to_place="Trip B")
 
@@ -154,6 +151,22 @@ def test_each_trip_tracks_its_own_step_totals_independently(user_id, patched_ses
     assert f._db.today_steps(str(trip_b.id)) == 1000
     assert f._db.total_steps(str(trip_a.id)) == 1500
     assert f._db.total_steps(str(trip_b.id)) == 1000
+
+
+def test_lifetime_steps_sums_across_every_trip_this_user_has_ever_run(user_id, patched_session, seed_trip):
+    # Profile screen's one stat (frontend/src/pages/ProfilePage.tsx) - unlike
+    # today_steps/total_steps above, this is keyed by user_id, not one
+    # trip_id, so it should keep growing across trips instead of
+    # resetting per trip.
+    f = TravelFacade()
+    trip_a = seed_trip(user_id, _route(TOTAL_DISTANCE_M), to_place="Trip A")
+    f.record_steps(user_id, 1000)
+
+    trips.complete_trip(patched_session, trip_a)
+    trip_b = seed_trip(user_id, _route(TOTAL_DISTANCE_M), to_place="Trip B")
+    f.record_steps(user_id, 750)
+
+    assert f.lifetime_steps(user_id) == 1750
 
 
 def test_non_foot_exercise_adds_no_distance_and_does_not_block_steps(facade, user_id, patched_session):
@@ -197,6 +210,32 @@ def test_landmark_event_notifies_with_name_and_percent(facade, user_id, patched_
     facade.record_steps(user_id, 100_000, interval)  # far past mile 10 with the default stride
 
     assert listener.received == ["🏁 Landmark reached: TownA (10.0% of the way there!)"]
+
+
+def test_checkpoint_reached_event_carries_user_and_checkpoint_details(
+    facade, user_id, patched_session, seed_checkpoint
+):
+    trip = _the_active_trip(patched_session, user_id)
+    trip.user.email = "walker@example.com"
+    seed_checkpoint(
+        trip, "TownA", distance_from_start_m=10.0 * METERS_PER_MILE,
+        checkpoint_number=1, description="A stop along the way in TownA.",
+    )
+    patched_session.commit()
+
+    listener = _RecordingListener()
+    facade.events.subscribe("checkpoint_reached", listener)
+
+    interval = TimeInterval(startTime="2026-09-08T09:00:00Z", endTime="2026-09-08T09:30:00Z")
+    facade.record_steps(user_id, 100_000, interval)  # far past mile 10 with the default stride
+
+    assert len(listener.received) == 1
+    event = listener.received[0]
+    assert event.user_id == user_id
+    assert event.user_name == "walker@example.com"
+    assert event.checkpoint_name == "TownA"
+    assert event.checkpoint_number == 1
+    assert event.description == "A stop along the way in TownA."
 
 
 def test_halfway_event_notifies_once_and_never_again(facade, user_id, patched_session):

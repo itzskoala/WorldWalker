@@ -1,17 +1,20 @@
 # auth/google_health_auth.py
 # Pure OAuth HTTP mechanics for the Google Health API - talks to Google,
-# never touches a file or the database. credentials.json is the OAuth
-# *client* (client_id/secret); the access/refresh tokens this module
-# hands back are persisted by auth/connections.py, in Postgres, not here
-# (that split - see Step 7 in docs/prompt_log/ - replaced an earlier
-# .tokens.json file that lived at this module's level).
+# never touches the database. credentials.json is the OAuth *client*
+# (client_id/secret); the access/refresh tokens this module hands back
+# are persisted by auth/connections.py, in Postgres, not here (that split
+# - see Step 7 in docs/prompt_log/ - replaced an earlier .tokens.json
+# file that lived at this module's level).
+#
+# _load_client() reads from GOOGLE_OAUTH_CLIENT_ID/GOOGLE_OAUTH_CLIENT_SECRET/
+# GOOGLE_OAUTH_REDIRECT_URI first, falling back to credentials.json - the
+# file is gitignored (a real secret) and never reaches a git-linked
+# deployment, so a real deployment sets these as env vars instead; local
+# dev can keep using the file, unchanged.
 
 import json
-import secrets
+import os
 import time
-import uuid
-from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -23,44 +26,6 @@ CREDENTIALS_PATH = ROOT / "credentials.json"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 REVOKE_URL = "https://oauth2.googleapis.com/revoke"
-
-# CSRF protection for the OAuth redirect, and how the callback (which
-# Google calls directly - no WorldWalker JWT on that request) knows which
-# WorldWalker user this connection is for: build_auth_url() issues a
-# random state bound to that user and remembers it here; auth/router.py's
-# callback must present that exact state back (and only once, before it
-# expires) to recover the user_id and let exchange_code() run.
-# In-memory/single-process, matching the rest of this MVP's session state
-# (see core/facade.py's TravelFacade._sessions) - a real multi-worker
-# deployment would need this shared (e.g. in the database), not local to
-# one process.
-STATE_TTL = timedelta(minutes=10)
-
-
-@dataclass
-class _PendingState:
-    user_id: uuid.UUID
-    expires_at: datetime
-
-
-_pending_states: dict[str, _PendingState] = {}
-
-
-def _issue_state(user_id: uuid.UUID) -> str:
-    state = secrets.token_urlsafe(32)
-    _pending_states[state] = _PendingState(user_id=user_id, expires_at=datetime.now(timezone.utc) + STATE_TTL)
-    return state
-
-
-def consume_state(state: str) -> uuid.UUID | None:
-    """The WorldWalker user_id this state was issued for, or None if it's
-    unknown, already used, or expired. Removing it on every call (even an
-    expired hit) makes each state single-use - replaying an old callback
-    URL (or a guessed/leaked state) fails the second time."""
-    pending = _pending_states.pop(state, None)
-    if pending is None or pending.expires_at < datetime.now(timezone.utc):
-        return None
-    return pending.user_id
 
 # Read-only scopes for the 4 metrics WorldWalker tracks, plus .profile to
 # call users.getIdentity (needed for healthUserId - required to create a
@@ -74,15 +39,21 @@ SCOPES = [
 
 
 def _load_client() -> tuple[str, str, str]:
+    client_id = os.environ.get("GOOGLE_OAUTH_CLIENT_ID")
+    client_secret = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET")
+    redirect_uri = os.environ.get("GOOGLE_OAUTH_REDIRECT_URI")
+    if client_id and client_secret and redirect_uri:
+        return client_id, client_secret, redirect_uri
+
     creds = json.loads(CREDENTIALS_PATH.read_text())["web"]
     return creds["client_id"], creds["client_secret"], creds["redirect_uris"][0]
 
 
-def build_auth_url(user_id: uuid.UUID) -> str:
-    """URL for the Connect button to send the user to. Issues a fresh CSRF
-    state bound to this WorldWalker user_id (see _issue_state) that
-    auth/router.py's callback must see come back before it will exchange
-    a code - never the user_id itself, which a client could tamper with.
+def build_auth_url(state: str) -> str:
+    """URL for the Connect button to send the user to, using a state
+    auth/router.py already issued and persisted (auth/oauth_state.py) -
+    this module stays pure OAuth HTTP and never touches the database
+    itself, so it doesn't mint or track state, just puts it in the URL.
 
     prompt=consent forces Google to re-show the consent screen and issue a
     fresh refresh_token even if this client was already authorized before -
@@ -92,8 +63,6 @@ def build_auth_url(user_id: uuid.UUID) -> str:
     all, so the access token became a dead end the moment it expired)."""
     client_id, _, redirect_uri = _load_client()
     scope = " ".join(SCOPES)
-    state = _issue_state(user_id)
-    print(f"🔐 auth: issued state {state[:8]}... for user {user_id}")
     return (
         f"{AUTH_URL}?client_id={client_id}&redirect_uri={redirect_uri}"
         f"&response_type=code&access_type=offline&prompt=consent&scope={scope}&state={state}"

@@ -151,3 +151,22 @@ def test_bulk_delete_only_removes_the_given_trips(user_id, auth_headers, seed_tr
     assert response.json()["deleted"] == 1
     remaining_ids = {t["trip_id"] for t in client.get("/api/journey/list", headers=headers).json()["trips"]}
     assert remaining_ids == {str(keep.id)}
+
+
+def test_journey_stats_requires_authentication(patched_session):
+    response = client.get("/api/journey/stats")
+    assert response.status_code == 401
+
+
+def test_journey_stats_returns_lifetime_steps(user_id, patched_session, auth_headers, seed_trip):
+    # frontend/src/pages/ProfilePage.tsx's one stat - travel_facade's shared step
+    # log is Postgres-backed now (data/total_distance_db.py), so it's
+    # already isolated inside this test's own rolled-back transaction via
+    # the patched_session fixture, same as every other write here.
+    seed_trip(user_id, _short_route())
+    travel_facade.record_steps(user_id, 2500)
+
+    response = client.get("/api/journey/stats", headers=auth_headers(user_id))
+
+    assert response.status_code == 200
+    assert response.json()["lifetime_steps"] == 2500

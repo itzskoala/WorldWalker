@@ -27,5 +27,8 @@ class EventManager:
             self._listeners[event_type].remove(listener)
 
     def notify(self, event_type: str, data) -> None:
-        for listener in self._listeners[event_type]:
+        listeners = self._listeners[event_type]
+        # [TEMP DEBUG] remove before deploying - see notification-flow testing
+        print(f"📡 [TEMP DEBUG] EventManager.notify('{event_type}') -> {len(listeners)} listener(s)")
+        for listener in listeners:
             listener.update(data)

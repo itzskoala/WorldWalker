@@ -5,8 +5,6 @@
 # client's credentials.json is redirected to a tmp_path.
 
 import json
-import uuid
-from datetime import datetime, timedelta, timezone
 
 from auth import google_health_auth
 
@@ -66,69 +64,22 @@ def test_revoke_token_posts_to_googles_revoke_endpoint(tmp_path, monkeypatch, ht
     assert "token=some-token" in request.content.decode()
 
 
-def test_build_auth_url_includes_a_unique_pending_state(tmp_path, monkeypatch):
+def test_build_auth_url_includes_the_given_state(tmp_path, monkeypatch):
+    # State issuance/persistence is auth/oauth_state.py's job now (see
+    # tests/test_oauth_state.py) - this module just puts an already-issued
+    # state into the URL, no CSRF logic or database access of its own.
     _point_credentials_at(tmp_path, monkeypatch)
-    monkeypatch.setattr(google_health_auth, "_pending_states", {})
-    user_id = uuid.uuid4()
 
-    url1 = google_health_auth.build_auth_url(user_id)
-    url2 = google_health_auth.build_auth_url(user_id)
+    url = google_health_auth.build_auth_url("a-real-state-token")
 
-    state1 = url1.split("state=")[1].split("&")[0]
-    state2 = url2.split("state=")[1].split("&")[0]
-
-    assert state1 != state2
-    assert set(google_health_auth._pending_states.keys()) == {state1, state2}
+    assert "state=a-real-state-token" in url
 
 
-# --- state -> user_id mapping (OAuth state security) ---
-
-def test_consume_state_returns_the_user_id_it_was_issued_for(tmp_path, monkeypatch):
+def test_build_auth_url_includes_the_client_and_scopes(tmp_path, monkeypatch):
     _point_credentials_at(tmp_path, monkeypatch)
-    monkeypatch.setattr(google_health_auth, "_pending_states", {})
-    user_a = uuid.uuid4()
 
-    url = google_health_auth.build_auth_url(user_a)
-    state = url.split("state=")[1].split("&")[0]
+    url = google_health_auth.build_auth_url("some-state")
 
-    assert google_health_auth.consume_state(state) == user_a
-
-
-def test_consume_state_is_single_use(tmp_path, monkeypatch):
-    _point_credentials_at(tmp_path, monkeypatch)
-    monkeypatch.setattr(google_health_auth, "_pending_states", {})
-    url = google_health_auth.build_auth_url(uuid.uuid4())
-    state = url.split("state=")[1].split("&")[0]
-
-    first = google_health_auth.consume_state(state)
-    second = google_health_auth.consume_state(state)
-
-    assert first is not None
-    assert second is None
-
-
-def test_consume_state_rejects_an_unknown_state(monkeypatch):
-    monkeypatch.setattr(google_health_auth, "_pending_states", {})
-    assert google_health_auth.consume_state("never-issued") is None
-
-
-def test_consume_state_rejects_an_expired_state():
-    user_id = uuid.uuid4()
-    google_health_auth._pending_states["stale-state"] = google_health_auth._PendingState(
-        user_id=user_id, expires_at=datetime.now(timezone.utc) - timedelta(seconds=1)
-    )
-
-    assert google_health_auth.consume_state("stale-state") is None
-    assert "stale-state" not in google_health_auth._pending_states  # expired hit still consumes it
-
-
-def test_different_users_get_different_states_for_the_same_pending_set(tmp_path, monkeypatch):
-    _point_credentials_at(tmp_path, monkeypatch)
-    monkeypatch.setattr(google_health_auth, "_pending_states", {})
-    user_a, user_b = uuid.uuid4(), uuid.uuid4()
-
-    state_a = google_health_auth.build_auth_url(user_a).split("state=")[1].split("&")[0]
-    state_b = google_health_auth.build_auth_url(user_b).split("state=")[1].split("&")[0]
-
-    assert google_health_auth.consume_state(state_a) == user_a
-    assert google_health_auth.consume_state(state_b) == user_b
+    assert "client_id=cid" in url
+    assert "redirect_uri=https://www.google.com" in url
+    assert "prompt=consent" in url
