@@ -14,9 +14,7 @@
     { "src": "/api/(.*)", "dest": "app.py" },
     { "src": "/auth/(.*)", "dest": "app.py" },
     { "src": "/notifications/(.*)", "dest": "app.py" },
-    { "src": "/assets/(.*)", "dest": "/assets/$1" },
-    { "src": "/images/(.*)", "dest": "/images/$1" },
-    { "src": "/favicon\\.svg", "dest": "/favicon.svg" },
+    { "handle": "filesystem" },
     { "src": "/(.*)", "dest": "/index.html" }
   ]
 }
