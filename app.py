@@ -43,12 +43,25 @@ app.include_router(accounts_router)
 app.include_router(auth_router)
 app.include_router(webhook_router)
 app.include_router(notifications_router)
-app.mount("/assets", StaticFiles(directory=FRONTEND_DIST / "assets"), name="frontend-assets")
-# Everything under frontend/public/ (favicon aside) - e.g. the auth
-# hero photos (frontend/public/images/) - lands at dist's root next to
-# assets/, same as /assets above, or the SPA catch-all below would serve
-# index.html for these paths instead of the actual file.
-app.mount("/images", StaticFiles(directory=FRONTEND_DIST / "images"), name="frontend-images")
+# Local dev only (uvicorn serving this file directly): frontend/dist
+# exists because `npm run build` was run locally. In production,
+# vercel.json's own routes serve /assets, /images, and everything else
+# that isn't /api, /auth, or /notifications straight from the
+# @vercel/static-build output - this Python function never even sees
+# those requests there, and frontend/dist doesn't exist in its own
+# bundle (it's gitignored, and includeFiles can't pull in another
+# builder's generated output). StaticFiles(directory=...) raises at
+# import time if the directory is missing, which crashed every route in
+# production before this guard - see the postmortem: frontend/dist
+# genuinely never existed in the Python function's filesystem, so the
+# whole app failed to even import.
+if (FRONTEND_DIST / "assets").is_dir():
+    app.mount("/assets", StaticFiles(directory=FRONTEND_DIST / "assets"), name="frontend-assets")
+if (FRONTEND_DIST / "images").is_dir():
+    # Everything under frontend/public/ (favicon aside) - e.g. the auth
+    # hero photos (frontend/public/images/) - lands at dist's root next
+    # to assets/, same as /assets above.
+    app.mount("/images", StaticFiles(directory=FRONTEND_DIST / "images"), name="frontend-images")
 
 _geocoder = NominatimGeocoder()
 
@@ -304,11 +317,20 @@ def delete_journeys(body: JourneyDeleteBulkRequest, current_user: User = Depends
 # catches what nothing else claimed; still explicitly excludes the API
 # prefixes so a genuinely missing API route 404s instead of silently
 # getting HTML back.
+#
+# In production this route is effectively dead code - vercel.json's own
+# routes send every non-API path straight to the @vercel/static-build
+# output before it ever reaches this Python function. It's what local
+# dev (uvicorn serving this file directly, no Vercel routing layer) uses
+# instead.
 @app.get("/{full_path:path}")
 def spa(full_path: str):
     if full_path.startswith(API_PREFIXES):
         raise HTTPException(status_code=404)
-    return FileResponse(FRONTEND_DIST / "index.html")
+    index_file = FRONTEND_DIST / "index.html"
+    if not index_file.is_file():
+        raise HTTPException(status_code=503, detail="Frontend build not found - run `npm run build` in frontend/.")
+    return FileResponse(index_file)
 
 
 if __name__ == "__main__":

@@ -1,12 +1,22 @@
 {
   "builds": [
     {
+      "src": "frontend/package.json",
+      "use": "@vercel/static-build",
+      "config": { "distDir": "dist" }
+    },
+    {
       "src": "app.py",
-      "use": "@vercel/python",
-      "config": { "includeFiles": "frontend/dist/**" }
+      "use": "@vercel/python"
     }
   ],
   "routes": [
-    { "src": "/(.*)", "dest": "app.py" }
+    { "src": "/api/(.*)", "dest": "app.py" },
+    { "src": "/auth/(.*)", "dest": "app.py" },
+    { "src": "/notifications/(.*)", "dest": "app.py" },
+    { "src": "/assets/(.*)", "dest": "/assets/$1" },
+    { "src": "/images/(.*)", "dest": "/images/$1" },
+    { "src": "/favicon\\.svg", "dest": "/favicon.svg" },
+    { "src": "/(.*)", "dest": "/index.html" }
   ]
 }
