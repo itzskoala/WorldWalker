@@ -250,7 +250,7 @@ window.TripView = (function () {
   async function poll() {
     if (!currentTripId) return;
     try {
-      const res = await fetch(`/api/journey/state?trip_id=${currentTripId}`);
+      const res = await window.Auth.apiFetch(`/api/journey/state?trip_id=${currentTripId}`);
       if (res.status === 404) {
         // The trip finished, was deleted, or belongs to someone else now.
         hide();
@@ -341,7 +341,7 @@ window.TripView = (function () {
   // app.js's trips panel calls when a trip card is clicked.
   async function openTrip(tripId) {
     try {
-      const res = await fetch(`/api/journey/state?trip_id=${tripId}`);
+      const res = await window.Auth.apiFetch(`/api/journey/state?trip_id=${tripId}`);
       if (!res.ok) return;
       show(await res.json());
     } catch (err) {
@@ -354,6 +354,10 @@ window.TripView = (function () {
     tripView.hidden = true;
     if (globeHeader) globeHeader.hidden = false;
     if (searchContent) searchContent.hidden = false;
+    // web/static/js/home.js's activity card can be stale by now (a trip
+    // was started, paused, or finished while this view was up) - have it
+    // re-fetch rather than showing whatever it last rendered.
+    document.dispatchEvent(new CustomEvent("ww:home-shown"));
   }
 
   backBtn.addEventListener("click", hide);
@@ -363,7 +367,7 @@ window.TripView = (function () {
     const action = currentStatus === "paused" ? "resume" : "pause";
     pauseBtn.disabled = true;
     try {
-      const res = await fetch(`/api/journey/${currentTripId}/${action}`, { method: "POST" });
+      const res = await window.Auth.apiFetch(`/api/journey/${currentTripId}/${action}`, { method: "POST" });
       if (res.ok) applyState(await res.json());
     } catch (err) {
       console.warn(`Couldn't ${action} this trip:`, err);

@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from fastapi.responses import Response
 
-from auth.connections import get_active_user_id
+from auth.connections import get_user_id_for_provider_user_id
 from core.facade import travel_facade
 from database.session import SessionLocal
 from services.google_health.client import get_data_points
@@ -62,20 +62,38 @@ def process_health_data(data_type: str, point: dict, user_id: uuid.UUID) -> None
             print(f"❌ Unknown or unhandled dataType: {data_type}")
 
 
+def _provider_user_id(notification: dict) -> str | None:
+    """Which Google account this notification is about, in the "user":
+    "users/{healthUserId}" form Google's Health Connect Partner API sends
+    on every notification (same format auth/register_webhook_subscription.py
+    subscribes with) - the only identity a webhook ever carries, and how
+    it's mapped back to a specific WorldWalker user below."""
+    raw = notification.get("user")
+    if not raw:
+        return None
+    return raw.removeprefix("users/")
+
+
 def process_notification(notification: dict) -> None:
-    """A single {"dataType", "operation", "intervals": [...]} entry from
-    the webhook payload: pull the real data for each interval, then parse it.
-    Resolves the connected user once, up front - single-user MVP, so this is
-    always the same account Google is pushing data for. No connection yet
-    means there's no trip to credit, so the whole notification is skipped."""
+    """A single {"dataType", "operation", "user", "intervals": [...]}
+    entry from the webhook payload: resolve which WorldWalker user this
+    Google account belongs to, then pull the real data for each interval
+    and parse it. No matching connection (or no "user" on the
+    notification at all) means there's no trip to credit, so the whole
+    notification is skipped."""
     data_type = notification.get("dataType")
     if not data_type:
         print("❌ Notification missing dataType")
         return
 
+    provider_user_id = _provider_user_id(notification)
+    if provider_user_id is None:
+        print("❌ Notification missing a user - can't tell which WorldWalker account this belongs to")
+        return
+
     try:
         with SessionLocal() as session:
-            user_id = get_active_user_id(session)
+            user_id = get_user_id_for_provider_user_id(session, provider_user_id)
     except RuntimeError as e:
         print(f"❌ Skipping webhook notification - {e}")
         return
@@ -87,7 +105,7 @@ def process_notification(notification: dict) -> None:
             continue
 
         try:
-            points = get_data_points(data_type, start_time, end_time)
+            points = get_data_points(data_type, start_time, end_time, user_id)
         except Exception as e:
             print(f"❌ Failed to pull {data_type} for {start_time}-{end_time}: {e}")
             continue
@@ -96,14 +114,16 @@ def process_notification(notification: dict) -> None:
             process_health_data(data_type, point, user_id)
 
 
-def backfill_since(start_time: str, end_time: str = None) -> None:
-    """One-shot catch-up for the gap BEFORE the webhook ever saw anything.
-    Reuses process_notification as-is - a backfilled point goes through
-    the exact same pull + dispatch path a live one does."""
+def backfill_since(provider_user_id: str, start_time: str, end_time: str = None) -> None:
+    """One-shot catch-up for the gap BEFORE the webhook ever saw anything,
+    for one specific Google account. Reuses process_notification as-is -
+    a backfilled point goes through the exact same resolve + pull +
+    dispatch path a live notification does."""
     end_time = end_time or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     for data_type in BACKFILL_DATA_TYPES:
         process_notification({
             "dataType": data_type,
+            "user": f"users/{provider_user_id}",
             "intervals": [{"physicalTimeInterval": {"startTime": start_time, "endTime": end_time}}],
         })
 

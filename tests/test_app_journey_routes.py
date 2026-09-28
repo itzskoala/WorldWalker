@@ -1,9 +1,7 @@
 # tests/test_app_journey_routes.py
-# app.py's two trip-facing endpoints: POST /api/journey/start and
-# GET /api/journey/state. Both are gated on a real Google Health
-# connection (auth.connections.get_active_user_id) - the concrete meaning
-# of "as soon as the user connects successfully" from the feature's
-# design. Runs against the real app, with SessionLocal patched (see
+# app.py's trip-facing endpoints - all gated on a logged-in user now
+# (accounts.dependencies.get_current_user), not a Google Health
+# connection. Runs against the real app, with SessionLocal patched (see
 # tests/conftest.py's patched_session fixture) so all of it stays inside
 # this test's own rolled-back transaction.
 
@@ -13,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from app import app
 from core.facade import travel_facade
+from database.models import User
 from travel_logic.coordinates import Coordinates
 from travel_logic.route_service import Route, RoutePoint
 
@@ -40,25 +39,27 @@ def _mock_geocoding_and_routing(monkeypatch):
     (travel_logic/checkpoints.py rounds a route this short down to zero)."""
     monkeypatch.setattr(travel_facade._geocoder, "geocode", lambda place: Coordinates(0.0, 0.0))
     monkeypatch.setattr(travel_facade._router, "get_walking_route", lambda start, end: _short_route())
-    monkeypatch.setattr("core.facade.get_profile", lambda: {})
+    monkeypatch.setattr("core.facade.get_profile", lambda user_id: {})
 
 
-def test_start_journey_requires_a_connection(patched_session):
+def test_start_journey_requires_authentication(patched_session):
     response = client.post("/api/journey/start", json={"from_place": "Miami", "to_place": "Chicago"})
+    assert response.status_code == 401
 
+
+def test_start_journey_requires_both_places(user_id, auth_headers):
+    response = client.post(
+        "/api/journey/start", json={"from_place": "", "to_place": "Chicago"}, headers=auth_headers(user_id)
+    )
     assert response.status_code == 400
-    assert "connect" in response.json()["error"].lower()
 
 
-def test_start_journey_requires_both_places(connected_user_id):
-    response = client.post("/api/journey/start", json={"from_place": "", "to_place": "Chicago"})
-    assert response.status_code == 400
-
-
-def test_start_journey_returns_full_map_state_for_the_connected_user(connected_user_id, monkeypatch):
+def test_start_journey_returns_full_map_state_for_the_logged_in_user(user_id, auth_headers, monkeypatch):
     _mock_geocoding_and_routing(monkeypatch)
 
-    response = client.post("/api/journey/start", json={"from_place": "Miami", "to_place": "Chicago"})
+    response = client.post(
+        "/api/journey/start", json={"from_place": "Miami", "to_place": "Chicago"}, headers=auth_headers(user_id)
+    )
 
     assert response.status_code == 200
     body = response.json()
@@ -69,20 +70,22 @@ def test_start_journey_returns_full_map_state_for_the_connected_user(connected_u
     assert body["percent_complete"] == 0.0
 
 
-def test_journey_state_requires_a_connection(patched_session):
+def test_journey_state_requires_authentication(patched_session):
     response = client.get("/api/journey/state", params={"trip_id": str(uuid.uuid4())})
-    assert response.status_code == 400
+    assert response.status_code == 401
 
 
-def test_journey_state_404s_with_an_unknown_trip_id(connected_user_id):
-    response = client.get("/api/journey/state", params={"trip_id": str(uuid.uuid4())})
+def test_journey_state_404s_with_an_unknown_trip_id(user_id, auth_headers):
+    response = client.get(
+        "/api/journey/state", params={"trip_id": str(uuid.uuid4())}, headers=auth_headers(user_id)
+    )
     assert response.status_code == 404
 
 
-def test_journey_state_returns_the_requested_trip(connected_user_id, seed_trip):
-    trip = seed_trip(connected_user_id, _short_route())
+def test_journey_state_returns_the_requested_trip(user_id, auth_headers, seed_trip):
+    trip = seed_trip(user_id, _short_route())
 
-    response = client.get("/api/journey/state", params={"trip_id": str(trip.id)})
+    response = client.get("/api/journey/state", params={"trip_id": str(trip.id)}, headers=auth_headers(user_id))
 
     assert response.status_code == 200
     body = response.json()
@@ -91,46 +94,60 @@ def test_journey_state_returns_the_requested_trip(connected_user_id, seed_trip):
     assert len(body["route_geometry"]) == 2
 
 
-def test_journey_list_returns_every_trip_for_the_connected_user(connected_user_id, seed_trip):
-    seed_trip(connected_user_id, _short_route(), to_place="Chicago, Illinois")
-    seed_trip(connected_user_id, _short_route(), to_place="Denver, Colorado")
+def test_journey_state_404s_for_another_users_trip(user_id, auth_headers, seed_trip, patched_session):
+    trip = seed_trip(user_id, _short_route())
 
-    response = client.get("/api/journey/list")
+    other_user = User()
+    patched_session.add(other_user)
+    patched_session.commit()
+
+    response = client.get("/api/journey/state", params={"trip_id": str(trip.id)}, headers=auth_headers(other_user.id))
+    assert response.status_code == 404
+
+
+def test_journey_list_returns_every_trip_for_the_logged_in_user(user_id, auth_headers, seed_trip):
+    seed_trip(user_id, _short_route(), to_place="Chicago, Illinois")
+    seed_trip(user_id, _short_route(), to_place="Denver, Colorado")
+
+    response = client.get("/api/journey/list", headers=auth_headers(user_id))
 
     assert response.status_code == 200
     to_places = {t["to_place"] for t in response.json()["trips"]}
     assert to_places == {"Chicago, Illinois", "Denver, Colorado"}
 
 
-def test_pause_then_resume_round_trips_through_the_api(connected_user_id, seed_trip):
-    trip = seed_trip(connected_user_id, _short_route())
+def test_pause_then_resume_round_trips_through_the_api(user_id, auth_headers, seed_trip):
+    trip = seed_trip(user_id, _short_route())
+    headers = auth_headers(user_id)
 
-    paused = client.post(f"/api/journey/{trip.id}/pause")
+    paused = client.post(f"/api/journey/{trip.id}/pause", headers=headers)
     assert paused.status_code == 200
     assert paused.json()["status"] == "paused"
 
-    resumed = client.post(f"/api/journey/{trip.id}/resume")
+    resumed = client.post(f"/api/journey/{trip.id}/resume", headers=headers)
     assert resumed.status_code == 200
     assert resumed.json()["status"] == "active"
 
 
-def test_delete_journey_removes_it_from_the_list(connected_user_id, seed_trip):
-    trip = seed_trip(connected_user_id, _short_route())
+def test_delete_journey_removes_it_from_the_list(user_id, auth_headers, seed_trip):
+    trip = seed_trip(user_id, _short_route())
+    headers = auth_headers(user_id)
 
-    response = client.delete(f"/api/journey/{trip.id}")
+    response = client.delete(f"/api/journey/{trip.id}", headers=headers)
     assert response.status_code == 204
 
-    listing = client.get("/api/journey/list")
+    listing = client.get("/api/journey/list", headers=headers)
     assert listing.json()["trips"] == []
 
 
-def test_bulk_delete_only_removes_the_given_trips(connected_user_id, seed_trip):
-    keep = seed_trip(connected_user_id, _short_route(), to_place="Chicago, Illinois")
-    delete_me = seed_trip(connected_user_id, _short_route(), to_place="Denver, Colorado")
+def test_bulk_delete_only_removes_the_given_trips(user_id, auth_headers, seed_trip):
+    keep = seed_trip(user_id, _short_route(), to_place="Chicago, Illinois")
+    delete_me = seed_trip(user_id, _short_route(), to_place="Denver, Colorado")
+    headers = auth_headers(user_id)
 
-    response = client.post("/api/journey/delete", json={"trip_ids": [str(delete_me.id)]})
+    response = client.post("/api/journey/delete", json={"trip_ids": [str(delete_me.id)]}, headers=headers)
 
     assert response.status_code == 200
     assert response.json()["deleted"] == 1
-    remaining_ids = {t["trip_id"] for t in client.get("/api/journey/list").json()["trips"]}
+    remaining_ids = {t["trip_id"] for t in client.get("/api/journey/list", headers=headers).json()["trips"]}
     assert remaining_ids == {str(keep.id)}

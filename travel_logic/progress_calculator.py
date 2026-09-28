@@ -118,7 +118,12 @@ def locate_on_route(route, distance_walked_m: float):
         raise ValueError("Route has no points")
 
     total = route.total_distance
-    distance_walked_m = max(0.0, min(distance_walked_m, total))
+    # Clamp against the last point's own distance_from_start, not
+    # route.total_distance - they're built to match exactly, but clamping
+    # against the route's own point data (what bisect_left below actually
+    # searches) is what guarantees idx can never land past the end of
+    # route.points, however the two values were computed.
+    distance_walked_m = max(0.0, min(distance_walked_m, route.points[-1].distance_from_start))
 
     distances = [p.distance_from_start for p in route.points]
     idx = bisect.bisect_left(distances, distance_walked_m)

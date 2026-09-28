@@ -6,9 +6,8 @@
 
 import uuid
 from pathlib import Path
-from typing import Optional
 
-from fastapi import FastAPI, Query
+from fastapi import Depends, FastAPI, Query
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -17,8 +16,11 @@ from starlette.requests import Request
 
 from travel_logic.coordinates import Coordinates
 from travel_logic.geocoder import NominatimGeocoder
+from accounts.dependencies import get_current_user
+from accounts.router import router as accounts_router
 from auth.connections import get_active_user_id
 from auth.router import router as auth_router
+from database.models import User
 from database.session import SessionLocal
 from services.google_health.webhook import router as webhook_router
 from data.intake import IntakeRequest, start_journey_from_intake
@@ -28,6 +30,7 @@ ROOT = Path(__file__).resolve().parent
 WEB_DIR = ROOT / "web"
 
 app = FastAPI(title="WorldWalker")
+app.include_router(accounts_router)
 app.include_router(auth_router)
 app.include_router(webhook_router)
 app.mount("/static", StaticFiles(directory=WEB_DIR / "static"), name="static")
@@ -36,29 +39,19 @@ templates = Jinja2Templates(directory=WEB_DIR / "templates")
 _geocoder = NominatimGeocoder()
 
 
-# Computed once at import time (credentials.json doesn't change between
-# requests) and handed to the template as a real <a target="_blank"> href -
-# NOT window.open() from a JS callback fired after a fetch() round-trip,
-# which Chrome's popup blocker silently swallows since that runs outside
-# the original click's user-gesture window (hit this for real building the
-# previous Gradio version - see docs/prompt_log/2026-09-13-gradio-ui.md).
-def _build_connect_url() -> Optional[str]:
-    try:
-        from auth.google_health_auth import build_auth_url
-        return build_auth_url()
-    except Exception as e:
-        print(f"⚠️  Connect disabled: couldn't build the Google OAuth URL ({e})")
-        return None
-
-
-CONNECT_URL = _build_connect_url()
-
-
+# The OAuth consent URL is per-WorldWalker-user now (its state is bound
+# to whoever's logged in - see auth/google_health_auth.py), so it can't
+# be precomputed at import time or known for an unauthenticated page
+# load. web/static/js/app.js fetches one from POST /auth/google/start
+# (with the logged-in user's bearer token) when the Connect button is
+# clicked, instead of this template rendering a real href.
 def _is_connected() -> bool:
     """Whether the site's one Google Health connection is currently
-    active - checked fresh on every request (unlike CONNECT_URL above),
-    since this can flip from one request to the next as the user
-    connects/disconnects."""
+    active - checked fresh on every request, since this can flip from
+    one request to the next as the user connects/disconnects. Not yet
+    scoped to the logged-in user (this route runs before the frontend's
+    login check) - only used for the pre-login page shell's initial
+    render, same as before login existed."""
     with SessionLocal() as session:
         try:
             get_active_user_id(session)
@@ -70,7 +63,7 @@ def _is_connected() -> bool:
 @app.get("/")
 def index(request: Request):
     return templates.TemplateResponse(
-        request, "index.html", {"connect_url": CONNECT_URL, "is_connected": _is_connected()}
+        request, "index.html", {"connect_url": None, "is_connected": _is_connected()}
     )
 
 
@@ -97,18 +90,6 @@ def reverse_place(lat: float, lng: float):
     return {"place": place}
 
 
-def _current_user_id():
-    """The real, connected WorldWalker user - trips are keyed on this UUID,
-    not a placeholder id. Returns (user_id, None) on success or (None,
-    error_response) when nobody's connected yet, so callers can just
-    `user_id, error = _current_user_id(); if error: return error`."""
-    with SessionLocal() as session:
-        try:
-            return get_active_user_id(session), None
-        except RuntimeError as e:
-            return None, JSONResponse({"error": str(e)}, status_code=400)
-
-
 class JourneyStartRequest(BaseModel):
     from_place: str
     to_place: str
@@ -116,20 +97,16 @@ class JourneyStartRequest(BaseModel):
 
 
 @app.post("/api/journey/start")
-def start_journey(body: JourneyStartRequest):
+def start_journey(body: JourneyStartRequest, current_user: User = Depends(get_current_user)):
     if not body.from_place or not body.to_place:
         return JSONResponse({"error": "Pick both a starting point and a destination."}, status_code=400)
-
-    user_id, error = _current_user_id()
-    if error is not None:
-        return error
 
     try:
         intake = IntakeRequest(
             from_place=body.from_place,
             to_place=body.to_place,
             round_trip=body.round_trip,
-            user_id=user_id,
+            user_id=current_user.id,
         )
         state = start_journey_from_intake(intake)
     except ValueError as e:
@@ -148,7 +125,7 @@ def start_journey(body: JourneyStartRequest):
 
 
 @app.get("/api/journey/state")
-def journey_state(trip_id: uuid.UUID):
+def journey_state(trip_id: uuid.UUID, current_user: User = Depends(get_current_user)):
     """Polled by web/static/js/trip.js while a trip is on screen - the same
     map-ready shape start_journey() returns, always with every checkpoint
     included (tagged hit: true/false), not just the hit ones. Filtering
@@ -157,60 +134,40 @@ def journey_state(trip_id: uuid.UUID):
     flag), not this endpoint's. A user can have several trips going at
     once now, so trip_id says which one - see web/static/js/trip.js's
     show()."""
-    user_id, error = _current_user_id()
-    if error is not None:
-        return error
-
     try:
-        return travel_facade.get_map_state(user_id, trip_id)
+        return travel_facade.get_map_state(current_user.id, trip_id)
     except ValueError:
         return JSONResponse({"error": "No such trip."}, status_code=404)
 
 
 @app.get("/api/journey/list")
-def journey_list():
-    """Every trip belonging to the connected user, active or finished -
+def journey_list(current_user: User = Depends(get_current_user)):
+    """Every trip belonging to the logged-in user, active or finished -
     web/static/js/app.js's trips panel splits this into "Active" (status
     active/paused) and "Past" (completed/abandoned) sections client-side."""
-    user_id, error = _current_user_id()
-    if error is not None:
-        return error
-
-    return {"trips": travel_facade.list_trips(user_id)}
+    return {"trips": travel_facade.list_trips(current_user.id)}
 
 
 @app.post("/api/journey/{trip_id}/pause")
-def pause_journey(trip_id: uuid.UUID):
-    user_id, error = _current_user_id()
-    if error is not None:
-        return error
-
+def pause_journey(trip_id: uuid.UUID, current_user: User = Depends(get_current_user)):
     try:
-        return travel_facade.pause_journey(user_id, trip_id)
+        return travel_facade.pause_journey(current_user.id, trip_id)
     except ValueError:
         return JSONResponse({"error": "No such trip."}, status_code=404)
 
 
 @app.post("/api/journey/{trip_id}/resume")
-def resume_journey(trip_id: uuid.UUID):
-    user_id, error = _current_user_id()
-    if error is not None:
-        return error
-
+def resume_journey(trip_id: uuid.UUID, current_user: User = Depends(get_current_user)):
     try:
-        return travel_facade.resume_journey(user_id, trip_id)
+        return travel_facade.resume_journey(current_user.id, trip_id)
     except ValueError:
         return JSONResponse({"error": "No such trip."}, status_code=404)
 
 
 @app.delete("/api/journey/{trip_id}")
-def delete_journey(trip_id: uuid.UUID):
-    user_id, error = _current_user_id()
-    if error is not None:
-        return error
-
+def delete_journey(trip_id: uuid.UUID, current_user: User = Depends(get_current_user)):
     try:
-        travel_facade.delete_journey(user_id, trip_id)
+        travel_facade.delete_journey(current_user.id, trip_id)
     except ValueError:
         return JSONResponse({"error": "No such trip."}, status_code=404)
     return Response(status_code=204)
@@ -221,14 +178,10 @@ class JourneyDeleteBulkRequest(BaseModel):
 
 
 @app.post("/api/journey/delete")
-def delete_journeys(body: JourneyDeleteBulkRequest):
+def delete_journeys(body: JourneyDeleteBulkRequest, current_user: User = Depends(get_current_user)):
     """Multi-select delete from the trips panel - one request instead of
     the frontend firing a DELETE per selected card."""
-    user_id, error = _current_user_id()
-    if error is not None:
-        return error
-
-    deleted_count = travel_facade.delete_journeys(user_id, body.trip_ids)
+    deleted_count = travel_facade.delete_journeys(current_user.id, body.trip_ids)
     return {"deleted": deleted_count}
 
 

@@ -30,6 +30,16 @@ class User(Base):
     __tablename__ = "users"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+
+    # Nullable: rows written before accounts/service.py's signup existed
+    # have neither - a WorldWalker login (email/password) is required for
+    # every new user now, including one about to connect Google Health
+    # (see auth/connections.py - it only ever links an existing user, it
+    # never creates one).
+    email: Mapped[str | None] = mapped_column(String, unique=True, nullable=True)
+    hashed_password: Mapped[str | None] = mapped_column(String, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -58,9 +68,12 @@ class GoogleHealthConnection(Base):
     )
 
     # Google's own stable id for the account (healthUserId, from
-    # users.me.identity) - the key that makes reconnect work: look this
-    # up first, and it tells you whether this is a brand new connection
-    # or an existing one being re-established.
+    # users.me.identity) - UNIQUE so one Google account can never be
+    # linked to two different WorldWalker users. Which WorldWalker user a
+    # connection belongs to is always user_id above, resolved from our
+    # own login (OAuth state, see auth/google_health_auth.py), never from
+    # this column - this is only how an incoming webhook notification
+    # (which only ever carries Google's own identity) maps back to one.
     provider_user_id: Mapped[str] = mapped_column(String, unique=True, nullable=False)
 
     # Nullable - disconnecting a connection nulls these out rather than

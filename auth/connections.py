@@ -18,7 +18,7 @@ import httpx
 from sqlalchemy.orm import Session
 
 from auth import google_health_auth
-from database.models import GoogleHealthConnection, User
+from database.models import GoogleHealthConnection
 from services.google_health.client import get_health_user_id
 
 # Refresh a bit before the token actually expires, not exactly at the
@@ -27,35 +27,47 @@ from services.google_health.client import get_health_user_id
 _EXPIRY_SAFETY_MARGIN = timedelta(seconds=60)
 
 
-def upsert_connection_from_tokens(session: Session, tokens: dict) -> GoogleHealthConnection:
-    """tokens: exchange_code()'s return value.
+def upsert_connection_from_tokens(session: Session, user_id, tokens: dict) -> GoogleHealthConnection:
+    """tokens: exchange_code()'s return value. user_id: the WorldWalker
+    user this OAuth flow was started for - recovered from the OAuth state
+    by the caller (auth/router.py's callback), never from anything Google
+    tells us. WorldWalker identity is always the source of truth here:
+    this links Google's account to an EXISTING WorldWalker user, it never
+    creates one.
 
     Looks up the Google account's stable identity (healthUserId) using
     the access token we just got, not get_valid_access_token() below -
     at this exact moment the row we're about to find or create doesn't
     exist yet to read a token back out of.
 
-    provider_user_id is the find-or-create key: an existing row means
-    this is a reconnect (tokens/status updated in place, not a new row);
-    no existing row means a brand new WorldWalker user, created together
-    with their first connection.
+    user_id is the find-or-create key: an existing row for this user
+    means this is a reconnect (tokens/status/provider_user_id updated in
+    place, not a new row) - possibly with a different Google account than
+    last time, which is fine. Raises ValueError if that Google account is
+    already linked to a *different* WorldWalker user - one Google account
+    can never back two WorldWalker accounts.
     """
     provider_user_id = get_health_user_id(access_token=tokens["access_token"])
     expires_at = datetime.fromtimestamp(tokens["obtained_at"] + tokens["expires_in"], tz=timezone.utc)
 
-    connection = (
-        session.query(GoogleHealthConnection).filter_by(provider_user_id=provider_user_id).one_or_none()
+    other_owner = (
+        session.query(GoogleHealthConnection)
+        .filter(GoogleHealthConnection.provider_user_id == provider_user_id)
+        .filter(GoogleHealthConnection.user_id != user_id)
+        .one_or_none()
     )
+    if other_owner is not None:
+        raise ValueError("This Google account is already connected to a different WorldWalker account.")
+
+    connection = session.query(GoogleHealthConnection).filter_by(user_id=user_id).one_or_none()
 
     if connection is None:
-        user = User()
-        session.add(user)
-        session.flush()  # assigns user.id before the connection references it
-        connection = GoogleHealthConnection(user_id=user.id, provider_user_id=provider_user_id)
+        connection = GoogleHealthConnection(user_id=user_id, provider_user_id=provider_user_id)
         session.add(connection)
-        print(f"🔐 auth: new WorldWalker user created (provider_user_id={provider_user_id})")
+        print(f"🔐 auth: new Google Health connection for user {user_id} (provider_user_id={provider_user_id})")
     else:
-        print(f"🔐 auth: existing connection found, reconnecting (provider_user_id={provider_user_id})")
+        connection.provider_user_id = provider_user_id
+        print(f"🔐 auth: reconnecting Google Health for user {user_id} (provider_user_id={provider_user_id})")
 
     connection.access_token = tokens["access_token"]
     connection.refresh_token = tokens["refresh_token"]
@@ -68,7 +80,25 @@ def upsert_connection_from_tokens(session: Session, tokens: dict) -> GoogleHealt
     return connection
 
 
-def get_active_connection(session: Session) -> GoogleHealthConnection:
+def get_active_connection(session: Session, user_id) -> GoogleHealthConnection:
+    """This user's own active connection, and only this user's - every
+    caller that acts on a specific user's behalf (accessing, refreshing,
+    or disconnecting it) must go through here, never a query that could
+    return another user's row."""
+    connection = (
+        session.query(GoogleHealthConnection).filter_by(user_id=user_id, status="active").one_or_none()
+    )
+    if connection is None:
+        raise RuntimeError("No active Google Health connection for this user - they need to click Connect first.")
+    return connection
+
+
+def _any_active_connection(session: Session) -> GoogleHealthConnection:
+    """The sole active connection, whoever it belongs to - only for the
+    handful of callers with no specific logged-in user to scope to yet
+    (the incoming webhook, the pre-login connect banner). Never use this
+    to act on a connection on a particular user's behalf - that's
+    get_active_connection()."""
     connection = session.query(GoogleHealthConnection).filter_by(status="active").one_or_none()
     if connection is None:
         raise RuntimeError("No active Google Health connection - the user needs to click Connect first.")
@@ -76,26 +106,41 @@ def get_active_connection(session: Session) -> GoogleHealthConnection:
 
 
 def get_active_user_id(session: Session):
-    """The real WorldWalker User.id (UUID) behind the sole active Google
-    Health connection - the identity trips (database/trips.py) are keyed
-    on. Raises the same RuntimeError as get_active_connection() when
-    nobody's connected yet, since a trip can't be attached to a user_id
-    that doesn't exist."""
-    return get_active_connection(session).user_id
+    """The real WorldWalker User.id (UUID) behind *some* active Google
+    Health connection - single-tenant fallback for callers with no
+    specific logged-in user yet, see _any_active_connection(). Raises the
+    same RuntimeError when nobody's connected yet."""
+    return _any_active_connection(session).user_id
 
 
-def get_valid_access_token(session: Session, force_refresh: bool = False) -> str:
-    """A currently-usable access token for the (sole) active connection,
-    refreshing and persisting a new one first if the stored one is
-    expired (or force_refresh=True forces it regardless - used after a
-    401 despite this function saying the token looked fine, e.g. the
-    user revoked access out-of-band since our last check).
+def get_user_id_for_provider_user_id(session: Session, provider_user_id: str):
+    """The WorldWalker user_id behind a specific Google account
+    (healthUserId) - how an incoming webhook notification, which only
+    ever carries Google's own identity, is mapped back to the one
+    WorldWalker user it belongs to. Never "whichever connection happens
+    to be active" - see services/google_health/webhook.py."""
+    connection = (
+        session.query(GoogleHealthConnection)
+        .filter_by(provider_user_id=provider_user_id, status="active")
+        .one_or_none()
+    )
+    if connection is None:
+        raise RuntimeError(f"No active WorldWalker connection for Google account {provider_user_id!r}.")
+    return connection.user_id
+
+
+def get_valid_access_token(session: Session, user_id, force_refresh: bool = False) -> str:
+    """A currently-usable access token for this user's own active
+    connection, refreshing and persisting a new one first if the stored
+    one is expired (or force_refresh=True forces it regardless - used
+    after a 401 despite this function saying the token looked fine, e.g.
+    the user revoked access out-of-band since our last check).
 
     If Google rejects the refresh itself (the refresh_token is dead -
     revoked, or expired from 6 months of inactivity), the connection is
     disconnected here rather than left silently broken for every future
     call to keep failing against."""
-    connection = get_active_connection(session)
+    connection = get_active_connection(session, user_id)
 
     still_valid = (
         not force_refresh

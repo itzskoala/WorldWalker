@@ -9,6 +9,9 @@
 import json
 import secrets
 import time
+import uuid
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -21,30 +24,43 @@ TOKEN_URL = "https://oauth2.googleapis.com/token"
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 REVOKE_URL = "https://oauth2.googleapis.com/revoke"
 
-# CSRF protection for the OAuth redirect: build_auth_url() issues a random
-# state and remembers it here; auth/router.py's callback must present that
-# exact state back (and only once) before exchange_code() ever runs.
+# CSRF protection for the OAuth redirect, and how the callback (which
+# Google calls directly - no WorldWalker JWT on that request) knows which
+# WorldWalker user this connection is for: build_auth_url() issues a
+# random state bound to that user and remembers it here; auth/router.py's
+# callback must present that exact state back (and only once, before it
+# expires) to recover the user_id and let exchange_code() run.
 # In-memory/single-process, matching the rest of this MVP's session state
 # (see core/facade.py's TravelFacade._sessions) - a real multi-worker
 # deployment would need this shared (e.g. in the database), not local to
 # one process.
-_pending_states: set[str] = set()
+STATE_TTL = timedelta(minutes=10)
 
 
-def _issue_state() -> str:
+@dataclass
+class _PendingState:
+    user_id: uuid.UUID
+    expires_at: datetime
+
+
+_pending_states: dict[str, _PendingState] = {}
+
+
+def _issue_state(user_id: uuid.UUID) -> str:
     state = secrets.token_urlsafe(32)
-    _pending_states.add(state)
+    _pending_states[state] = _PendingState(user_id=user_id, expires_at=datetime.now(timezone.utc) + STATE_TTL)
     return state
 
 
-def consume_state(state: str) -> bool:
-    """True and removes it if state was actually pending; False otherwise.
-    Removing it makes each state single-use - replaying an old callback
+def consume_state(state: str) -> uuid.UUID | None:
+    """The WorldWalker user_id this state was issued for, or None if it's
+    unknown, already used, or expired. Removing it on every call (even an
+    expired hit) makes each state single-use - replaying an old callback
     URL (or a guessed/leaked state) fails the second time."""
-    if state in _pending_states:
-        _pending_states.remove(state)
-        return True
-    return False
+    pending = _pending_states.pop(state, None)
+    if pending is None or pending.expires_at < datetime.now(timezone.utc):
+        return None
+    return pending.user_id
 
 # Read-only scopes for the 4 metrics WorldWalker tracks, plus .profile to
 # call users.getIdentity (needed for healthUserId - required to create a
@@ -62,10 +78,11 @@ def _load_client() -> tuple[str, str, str]:
     return creds["client_id"], creds["client_secret"], creds["redirect_uris"][0]
 
 
-def build_auth_url() -> str:
+def build_auth_url(user_id: uuid.UUID) -> str:
     """URL for the Connect button to send the user to. Issues a fresh CSRF
-    state (see _issue_state) that auth/router.py's callback must see come
-    back before it will exchange a code.
+    state bound to this WorldWalker user_id (see _issue_state) that
+    auth/router.py's callback must see come back before it will exchange
+    a code - never the user_id itself, which a client could tamper with.
 
     prompt=consent forces Google to re-show the consent screen and issue a
     fresh refresh_token even if this client was already authorized before -
@@ -75,8 +92,8 @@ def build_auth_url() -> str:
     all, so the access token became a dead end the moment it expired)."""
     client_id, _, redirect_uri = _load_client()
     scope = " ".join(SCOPES)
-    state = _issue_state()
-    print(f"🔐 auth: issued state {state[:8]}... for a new consent request")
+    state = _issue_state(user_id)
+    print(f"🔐 auth: issued state {state[:8]}... for user {user_id}")
     return (
         f"{AUTH_URL}?client_id={client_id}&redirect_uri={redirect_uri}"
         f"&response_type=code&access_type=offline&prompt=consent&scope={scope}&state={state}"

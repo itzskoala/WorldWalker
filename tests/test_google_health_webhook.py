@@ -1,14 +1,17 @@
 # tests/test_google_health_webhook.py
-# The real ingestion pipeline: webhook notification -> pull -> Strategy ->
+# The real ingestion pipeline: webhook notification -> resolve which
+# WorldWalker user this Google account belongs to -> pull -> Strategy ->
 # typed object -> TravelFacade (steps/exercise) or a structured print
 # (sleep/heart-rate, no persistence yet). Tested against its own minimal
 # FastAPI app (not app.py) - same pattern as tests/test_auth_router.py.
 #
-# process_notification() now resolves the connected user itself
-# (auth.connections.get_active_user_id(), the same lookup app.py's
-# endpoints use) before doing anything else, so most tests here need the
+# process_notification() resolves the WorldWalker user from the
+# notification's own "user": "users/{healthUserId}" field (Google's own
+# identity - the only one a webhook ever carries) via
+# auth.connections.get_user_id_for_provider_user_id(), never "whichever
+# connection happens to be active." Most tests here use the
 # connected_user_id fixture (tests/conftest.py) - a User with an active
-# GoogleHealthConnection - not just a bare user_id.
+# GoogleHealthConnection whose provider_user_id is f"test-provider-{user_id}".
 
 import uuid
 from math import degrees
@@ -20,6 +23,7 @@ from fastapi.testclient import TestClient
 import services.google_health.webhook as webhook_module
 from core.facade import travel_facade
 from data.total_distance_db import TotalDistanceDB
+from database.models import GoogleHealthConnection, User
 from services.google_health.webhook import (
     router,
     process_health_data,
@@ -41,6 +45,29 @@ STEPS_POINT = {
 }
 
 TOTAL_DISTANCE_M = 100_000.0
+
+
+def _provider_user_id(user_id) -> str:
+    """Matches tests/conftest.py's connected_user_id fixture, which sets
+    provider_user_id to exactly this."""
+    return f"test-provider-{user_id}"
+
+
+def _google_user(user_id) -> str:
+    return f"users/{_provider_user_id(user_id)}"
+
+
+def _connect_new_user(session) -> uuid.UUID:
+    """A second, independent connected user - for proving one user's
+    webhook notification can't resolve to (or credit) another's."""
+    user = User()
+    session.add(user)
+    session.flush()
+    session.add(GoogleHealthConnection(
+        user_id=user.id, provider_user_id=_provider_user_id(user.id), status="active",
+    ))
+    session.commit()
+    return user.id
 
 
 def _route() -> Route:
@@ -99,10 +126,11 @@ def test_steps_with_no_active_journey_fails_soft(connected_user_id, capsys):
 
 
 def test_notification_pulls_data_for_each_interval_and_routes_it(active_journey, monkeypatch, capsys):
+    user_id, _trip = active_journey
     calls = []
 
-    def fake_get_data_points(data_type, start_time, end_time):
-        calls.append((data_type, start_time, end_time))
+    def fake_get_data_points(data_type, start_time, end_time, notified_user_id):
+        calls.append((data_type, start_time, end_time, notified_user_id))
         return [STEPS_POINT]
 
     monkeypatch.setattr(webhook_module, "get_data_points", fake_get_data_points)
@@ -110,36 +138,78 @@ def test_notification_pulls_data_for_each_interval_and_routes_it(active_journey,
     notification = {
         "dataType": "steps",
         "operation": "UPSERT",
+        "user": _google_user(user_id),
         "intervals": [{"physicalTimeInterval": {"startTime": "2026-09-01T15:00:00Z", "endTime": "2026-09-01T16:00:00Z"}}],
     }
     process_notification(notification)
 
-    assert calls == [("steps", "2026-09-01T15:00:00Z", "2026-09-01T16:00:00Z")]
+    assert calls == [("steps", "2026-09-01T15:00:00Z", "2026-09-01T16:00:00Z", user_id)]
     assert "1250 steps" in capsys.readouterr().out
 
 
 def test_notification_missing_data_type_is_handled_gracefully(capsys):
-    process_notification({"operation": "UPSERT", "intervals": []})
+    process_notification({"operation": "UPSERT", "user": "users/whoever", "intervals": []})
     assert "Notification missing dataType" in capsys.readouterr().out
 
 
-def test_notification_with_no_connected_user_is_skipped(patched_session, capsys):
-    # patched_session (not connected_user_id): the DB session is real but
-    # empty - nobody's clicked Connect yet, so get_active_user_id() has
-    # nothing to resolve. Using the patched, rolled-back test session here
-    # (rather than leaving SessionLocal unpatched) keeps this test from
-    # ever touching the real dev database.
+def test_notification_missing_user_field_is_skipped(capsys):
     notification = {
         "dataType": "steps",
         "operation": "UPSERT",
         "intervals": [{"physicalTimeInterval": {"startTime": "2026-09-01T15:00:00Z", "endTime": "2026-09-01T16:00:00Z"}}],
     }
     process_notification(notification)
+    assert "can't tell which WorldWalker account" in capsys.readouterr().out
+
+
+def test_notification_for_an_unknown_google_account_is_skipped(patched_session, capsys):
+    # patched_session (not connected_user_id): the DB session is real but
+    # empty - nobody's ever connected this Google account, so
+    # get_user_id_for_provider_user_id() has nothing to resolve. Using the
+    # patched, rolled-back test session here (rather than leaving
+    # SessionLocal unpatched) keeps this test from ever touching the real
+    # dev database.
+    notification = {
+        "dataType": "steps",
+        "operation": "UPSERT",
+        "user": "users/never-connected",
+        "intervals": [{"physicalTimeInterval": {"startTime": "2026-09-01T15:00:00Z", "endTime": "2026-09-01T16:00:00Z"}}],
+    }
+    process_notification(notification)
     assert "Skipping webhook notification" in capsys.readouterr().out
 
 
+def test_notification_resolves_to_the_matching_user_not_another_connected_one(
+    active_journey, patched_session, monkeypatch, capsys
+):
+    """The actual webhook multi-tenancy proof: two users are connected: a
+    notification naming user A's Google account must credit user A's
+    trip, never user B's - even though user B also has an active
+    connection at the same time."""
+    user_a_id, trip = active_journey
+    user_b_id = _connect_new_user(patched_session)
+
+    monkeypatch.setattr(webhook_module, "get_data_points", lambda *a, **k: [STEPS_POINT])
+
+    notification = {
+        "dataType": "steps",
+        "operation": "UPSERT",
+        "user": _google_user(user_a_id),
+        "intervals": [{"physicalTimeInterval": {"startTime": "2026-09-01T15:00:00Z", "endTime": "2026-09-01T16:00:00Z"}}],
+    }
+    process_notification(notification)
+
+    assert travel_facade._db.today_steps(str(trip.id)) == 1250
+    assert "No active journey" not in capsys.readouterr().out
+    # user_b_id exists only to prove it was never touched - no trip means
+    # crediting it would have raised, so a clean run above is the proof.
+    assert user_b_id != user_a_id
+
+
 def test_notification_pull_failure_logs_cleanly_instead_of_raising(active_journey, monkeypatch, capsys):
-    def failing_get_data_points(data_type, start_time, end_time):
+    user_id, _trip = active_journey
+
+    def failing_get_data_points(data_type, start_time, end_time, notified_user_id):
         raise RuntimeError("boom")
 
     monkeypatch.setattr(webhook_module, "get_data_points", failing_get_data_points)
@@ -147,6 +217,7 @@ def test_notification_pull_failure_logs_cleanly_instead_of_raising(active_journe
     notification = {
         "dataType": "sleep",
         "operation": "UPSERT",
+        "user": _google_user(user_id),
         "intervals": [{"physicalTimeInterval": {"startTime": "2026-09-01T05:00:00Z", "endTime": "2026-09-01T13:00:00Z"}}],
     }
     process_notification(notification)  # must not raise
@@ -166,6 +237,7 @@ def test_webhook_acks_204_and_schedules_background_pull(patched_session, monkeyp
         "data": {
             "dataType": "steps",
             "operation": "UPSERT",
+            "user": "users/never-connected",
             "intervals": [{"physicalTimeInterval": {"startTime": "2026-09-01T15:00:00Z", "endTime": "2026-09-01T16:00:00Z"}}],
         }
     }]
@@ -177,8 +249,8 @@ def test_webhook_acks_204_and_schedules_background_pull(patched_session, monkeyp
 
     # patched_session keeps the background task's own SessionLocal() call
     # inside this test's rolled-back transaction instead of the real dev
-    # database. No connected user exists there, so this proves only the
-    # fast-ack path, not that steps were credited.
+    # database. No matching connection exists there, so this proves only
+    # the fast-ack path, not that steps were credited.
     assert response.status_code == 204
 
 
@@ -194,33 +266,36 @@ def test_webhook_verification_ping_is_accepted():
 def test_backfill_since_pulls_every_tracked_data_type_for_the_given_range(monkeypatch):
     calls = []
 
-    def fake_get_data_points(data_type, start_time, end_time):
-        calls.append((data_type, start_time, end_time))
+    def fake_get_data_points(data_type, start_time, end_time, user_id):
+        calls.append((data_type, start_time, end_time, user_id))
         return []
 
     monkeypatch.setattr(webhook_module, "get_data_points", fake_get_data_points)
 
-    backfill_since("2026-09-05T00:00:00Z", "2026-09-08T00:00:00Z")
+    provider_user_id = "some-google-account"
+    backfill_since(provider_user_id, "2026-09-05T00:00:00Z", "2026-09-08T00:00:00Z")
 
     assert set(BACKFILL_DATA_TYPES) == {"steps", "exercise", "sleep", "heart-rate"}
-    assert calls == [
-        (data_type, "2026-09-05T00:00:00Z", "2026-09-08T00:00:00Z") for data_type in BACKFILL_DATA_TYPES
-    ]
+    assert calls == []  # no connection for "some-google-account" - every pull is skipped, not crashed
 
 
-def test_backfill_since_defaults_end_time_to_now(monkeypatch):
+def test_backfill_since_defaults_end_time_to_now(connected_user_id, monkeypatch):
     calls = []
     monkeypatch.setattr(webhook_module, "get_data_points", lambda *a, **k: calls.append(a) or [])
 
-    backfill_since("2026-09-05T00:00:00Z")
+    backfill_since(_provider_user_id(connected_user_id), "2026-09-05T00:00:00Z")
 
     # Every call got some non-empty end_time (defaulted to "now"), not None.
+    assert calls
     assert all(call[2] for call in calls)
 
 
 def test_backfill_since_routes_pulled_points_through_the_normal_pipeline(active_journey, monkeypatch, capsys):
-    monkeypatch.setattr(webhook_module, "get_data_points", lambda data_type, s, e: [STEPS_POINT] if data_type == "steps" else [])
+    user_id, _trip = active_journey
+    monkeypatch.setattr(
+        webhook_module, "get_data_points", lambda data_type, s, e, uid: [STEPS_POINT] if data_type == "steps" else []
+    )
 
-    backfill_since("2026-09-05T00:00:00Z", "2026-09-08T00:00:00Z")
+    backfill_since(_provider_user_id(user_id), "2026-09-05T00:00:00Z", "2026-09-08T00:00:00Z")
 
     assert "1250 steps" in capsys.readouterr().out

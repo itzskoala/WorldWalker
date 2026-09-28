@@ -12,3 +12,5 @@ psycopg[binary]
 alembic
 python-dotenv
 cryptography
+pyjwt
+bcrypt

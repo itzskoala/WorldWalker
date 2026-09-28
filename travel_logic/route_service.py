@@ -51,22 +51,31 @@ def build_route(coords: list[Coordinates]) -> Route:
         gaps.append(haversine_meters(coords[i], coords[i + 1]))
     gaps.append(0.0)
 
-    total_distance = sum(gaps)
+    # distances_from_start[i] is built by the same running accumulator that
+    # becomes total_distance below - not a separately-computed sum() - so
+    # route.total_distance is guaranteed to exactly equal
+    # route.points[-1].distance_from_start (sum() and a manual += loop can
+    # round differently over many points otherwise).
+    distances_from_start = []
+    distance_from_start = 0.0
+    for gap in gaps:
+        distances_from_start.append(distance_from_start)
+        distance_from_start += gap
+
+    total_distance = distance_from_start
 
     points = []
-    distance_from_start = 0.0
     for i, c in enumerate(coords):
         distance_to_previous = gaps[i - 1] if i > 0 else 0.0
         distance_to_next = gaps[i]
         points.append(RoutePoint(
             coords=c,
             point_number=i + 1,
-            distance_from_start=distance_from_start,
-            distance_to_destination=total_distance - distance_from_start,
+            distance_from_start=distances_from_start[i],
+            distance_to_destination=total_distance - distances_from_start[i],
             distance_to_previous=distance_to_previous,
             distance_to_next=distance_to_next,
         ))
-        distance_from_start += distance_to_next
 
     return Route(points=points, total_distance=total_distance, point_count=len(points))
 

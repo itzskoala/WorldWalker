@@ -14,7 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from auth.connections import get_active_connection
+from auth.connections import get_active_connection, get_active_user_id
 from core.facade import travel_facade
 from database import trips
 from database.session import SessionLocal
@@ -100,8 +100,8 @@ def main():
     args = _parse_args()
 
     with SessionLocal() as session:
-        connection = get_active_connection(session)
-        user_id = connection.user_id
+        user_id = get_active_user_id(session)
+        connection = get_active_connection(session, user_id)
         print(f"connected: provider_user_id={connection.provider_user_id}")
 
         active_trips = [t for t in trips.get_active_trips(session, user_id) if t.status == "active"]

@@ -221,7 +221,7 @@ def _start_journey_facade(monkeypatch, profile: dict) -> TravelFacade:
     f = TravelFacade()
     monkeypatch.setattr(f._geocoder, "geocode", lambda place: Coordinates(0, 0))
     monkeypatch.setattr(f._router, "get_walking_route", lambda start, end: _route(10.0))
-    monkeypatch.setattr("core.facade.get_profile", lambda: profile)
+    monkeypatch.setattr("core.facade.get_profile", lambda user_id: profile)
     return f
 
 
@@ -254,7 +254,7 @@ def test_start_journey_falls_back_cleanly_with_no_connection(patched_session, us
     monkeypatch.setattr(f._geocoder, "geocode", lambda place: Coordinates(0, 0))
     monkeypatch.setattr(f._router, "get_walking_route", lambda start, end: _route(10.0))
 
-    def _raise():
+    def _raise(user_id):
         raise RuntimeError("no active Google Health connection")
     monkeypatch.setattr("core.facade.get_profile", _raise)
 

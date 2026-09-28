@@ -19,10 +19,11 @@
 #      MANUAL (a separate list entry, alongside the AUTOMATIC one) -
 #      without this, creating the per-user subscription 400s as
 #      FAILED_PRECONDITION.
-#   2. A per-user Subscription resource, keyed by healthUserId (from
-#      services.google_health.client.get_health_user_id, which needs the
-#      .profile.readonly scope - reconnect via the site's Connect button if
-#      that scope was added after you'd already authorized).
+#   2. A per-user Subscription resource, keyed by healthUserId - one per
+#      connected WorldWalker user, read from our own GoogleHealthConnection
+#      rows (each was resolved via the .profile.readonly scope at connect
+#      time - see auth/connections.py - so this script never has to call
+#      Google's identity API itself).
 #
 # Re-running: an earlier version of this script deleted the subscriber
 # before recreating it, which 400s (FAILED_PRECONDITION) once a manual
@@ -40,8 +41,9 @@ import google.auth.transport.requests
 from dotenv import load_dotenv
 from google.oauth2 import service_account
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # so `services` is importable
-from services.google_health.client import get_health_user_id
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # so `database` is importable
+from database.models import GoogleHealthConnection
+from database.session import SessionLocal
 
 load_dotenv()
 
@@ -91,6 +93,19 @@ def _sleep_subscription_exists(base: str, health_user_id: str) -> bool:
     return any(sub.get("user") == f"users/{health_user_id}" for sub in subscriptions)
 
 
+def _connected_provider_user_ids() -> list[str]:
+    """provider_user_id (healthUserId) for every WorldWalker user with an
+    active Google Health connection - read straight from our own DB, not
+    Google's identity API, since we already stored each one the moment
+    that user connected (see auth/connections.py::upsert_connection_from_tokens).
+    A manual "sleep" subscription is per-Google-account, so every
+    connected account needs its own, not just whichever one happened to
+    be active when this script last ran."""
+    with SessionLocal() as session:
+        connections = session.query(GoogleHealthConnection).filter_by(status="active").all()
+        return [connection.provider_user_id for connection in connections]
+
+
 def register(public_url: str, project_id: str):
     base = f"https://health.googleapis.com/v4/projects/{project_id}/subscribers"
 
@@ -105,16 +120,22 @@ def register(public_url: str, project_id: str):
     print("Subscriber (steps/exercise/heart-rate/sleep):")
     print(json.dumps(subscriber, indent=2))
 
-    health_user_id = get_health_user_id()
-    if _sleep_subscription_exists(base, health_user_id):
-        print("\nManual subscription (sleep): already exists, skipping.")
-    else:
+    provider_user_ids = _connected_provider_user_ids()
+    if not provider_user_ids:
+        print("\nManual subscription (sleep): no connected users yet, nothing to subscribe.")
+        return
+
+    for health_user_id in provider_user_ids:
+        if _sleep_subscription_exists(base, health_user_id):
+            print(f"\nManual subscription (sleep) for {health_user_id}: already exists, skipping.")
+            continue
+
         create_response = _request("POST", f"{base}/{SUBSCRIBER_ID}/subscriptions", {
             "user": f"users/{health_user_id}",
             "dataTypes": MANUAL_DATA_TYPES,
         })
         _raise_with_body(create_response)
-        print("\nManual subscription (sleep):")
+        print(f"\nManual subscription (sleep) for {health_user_id}:")
         print(json.dumps(create_response.json(), indent=2))
 
 
