@@ -80,14 +80,19 @@ def upsert_connection_from_tokens(session: Session, user_id, tokens: dict) -> Go
     return connection
 
 
-def get_active_connection(session: Session, user_id) -> GoogleHealthConnection:
+def get_active_connection(session: Session, user_id, for_update: bool = False) -> GoogleHealthConnection:
     """This user's own active connection, and only this user's - every
     caller that acts on a specific user's behalf (accessing, refreshing,
     or disconnecting it) must go through here, never a query that could
-    return another user's row."""
-    connection = (
-        session.query(GoogleHealthConnection).filter_by(user_id=user_id, status="active").one_or_none()
-    )
+    return another user's row.
+
+    for_update: SELECT ... FOR UPDATE, so the row is locked for the rest
+    of this transaction - see get_valid_access_token() below, the one
+    caller that actually needs it."""
+    query = session.query(GoogleHealthConnection).filter_by(user_id=user_id, status="active")
+    if for_update:
+        query = query.with_for_update()
+    connection = query.one_or_none()
     if connection is None:
         raise RuntimeError("No active Google Health connection for this user - they need to click Connect first.")
     return connection
@@ -136,11 +141,25 @@ def get_valid_access_token(session: Session, user_id, force_refresh: bool = Fals
     after a 401 despite this function saying the token looked fine, e.g.
     the user revoked access out-of-band since our last check).
 
+    Google's webhook can fire several notifications for the same user
+    within milliseconds of each other (see services/google_health/
+    webhook.py - each one becomes its own concurrent background task), so
+    more than one request can land here for the same connection at once.
+    Without a lock, two concurrent "expired, refresh it" requests both go
+    to Google's token endpoint at the same time - a real race that was
+    producing intermittent 401 CREDENTIALS_MISSING responses from
+    health.googleapis.com even though the connection's tokens were fine.
+    with_for_update() (see get_active_connection) makes the check-then-
+    refresh below atomic across concurrent transactions: the second
+    request blocks until the first commits, then re-checks and simply
+    reuses the token the first request just refreshed, instead of racing
+    Google's token endpoint a second time.
+
     If Google rejects the refresh itself (the refresh_token is dead -
     revoked, or expired from 6 months of inactivity), the connection is
     disconnected here rather than left silently broken for every future
     call to keep failing against."""
-    connection = get_active_connection(session, user_id)
+    connection = get_active_connection(session, user_id, for_update=True)
 
     still_valid = (
         not force_refresh
@@ -163,6 +182,13 @@ def get_valid_access_token(session: Session, user_id, force_refresh: bool = Fals
     )
     session.commit()
     print(f"🔐 auth: access token refreshed and persisted for connection {connection.id}")
+
+    if not connection.access_token:
+        # Should be unreachable - Google's token endpoint always returns
+        # an access_token on 200, and raise_for_status() above already
+        # catches a non-200. Fail loudly here rather than let a blank
+        # Authorization header reach Google as a confusing CREDENTIALS_MISSING.
+        raise RuntimeError(f"Refreshed token for connection {connection.id} came back empty")
     return connection.access_token
 
 

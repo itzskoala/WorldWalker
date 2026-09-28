@@ -11,6 +11,7 @@
 # database/trips.py, and closes it - this class still owns no SQL itself.
 
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
@@ -34,11 +35,13 @@ from travel_logic.progress_calculator import (
     interval_within_any,
     milestones_just_crossed,
 )
-from travel_logic.checkpoints import generate_checkpoints
+from travel_logic.checkpoints import Checkpoint, generate_checkpoints_progressive, generate_description
 from travel_logic.description_generator import AIDescriptionGenerator
 from data.total_distance_db import TotalDistanceDB
 from core.observer_decorator.event_manager import EventManager
 from core.observer_decorator.console_alert_listener import ConsoleAlertListener
+from core.observer_decorator.email_alerts_listener import EmailAlertsListener
+from core.observer_decorator.events import CheckpointReachedEvent
 from services.google_health.client import get_profile
 from services.fitbitMetrics.fitbit_user_data import UserMetric
 
@@ -57,12 +60,18 @@ class TravelFacade:
         # Publisher (Observer pattern - https://refactoring.guru/design-patterns/observer):
         # TravelFacade plays the "Editor" role from that page's example -
         # it owns the EventManager and calls notify() when something
-        # worth telling subscribers about happens. Three event types
-        # today; only the terminal listener is wired up for now.
+        # worth telling subscribers about happens.
         self.events = EventManager()
         console_listener = ConsoleAlertListener()
         for event_type in ("landmark", "halfway", "finished"):
             self.events.subscribe(event_type, console_listener)
+
+        # checkpoint_reached carries structured data (see
+        # core/observer_decorator/events.py), not a ready-to-print string
+        # like the three above - Email is the only subscriber today, but
+        # any future listener (UI, push notifications, ...) subscribes the
+        # same way, via self.events.subscribe("checkpoint_reached", ...).
+        self.events.subscribe("checkpoint_reached", EmailAlertsListener())
 
     def start_journey(
         self,
@@ -73,10 +82,18 @@ class TravelFacade:
         stride_length_m: float | None = None,
         round_trip: bool = False,
     ) -> dict:
-        """Builds the route and checkpoints (network calls - geocoding,
-        OSRM, Nominatim), then persists the whole trip in one go. The
-        network work happens before any database session is opened, so a
-        slow external call never holds a DB connection idle."""
+        """Builds the route (network calls - geocoding, OSRM) and persists
+        the trip immediately, with no checkpoints yet - the map/route is
+        the critical path here, and checkpoint discovery is the genuinely
+        slow part (Nominatim's ~1 req/sec policy times up to MAX_SAMPLES
+        reverse lookups, each with its own AI description on top). App.py
+        kicks generate_checkpoints_for_trip() off as a background task
+        right after this returns, so the trip appears on screen - map,
+        route, distance, ETA - in roughly the time two geocodes and one
+        OSRM call take, not however long the full checkpoint pipeline
+        takes. The network work here still happens before any database
+        session is opened, so a slow external call never holds a DB
+        connection idle."""
         start = self._geocoder.geocode(from_place)
         end = self._geocoder.geocode(to_place)
         route = self._router.get_walking_route(start, end)
@@ -85,8 +102,6 @@ class TravelFacade:
         if stride_length_m is None:
             stride_length_m = stride_by_type.get("WALKING")
 
-        checkpoints = generate_checkpoints(route, self._geocoder, self._describer)
-
         with SessionLocal() as session:
             trip = trips.create_trip(
                 session=session,
@@ -94,13 +109,80 @@ class TravelFacade:
                 from_place=from_place,
                 to_place=to_place,
                 route=route,
-                checkpoints=checkpoints,
+                checkpoints=[],
                 gender=gender,
                 stride_length_m=stride_length_m,
                 stride_by_type=stride_by_type,
                 round_trip=round_trip,
             )
             return self._build_map_state(trip)
+
+    def generate_checkpoints_for_trip(self, trip_id: uuid.UUID) -> None:
+        """The slow part of starting a journey, split out of start_journey()
+        above so it can run after the trip (map/route) is already on
+        screen - see app.py's /api/journey/start, which schedules this as
+        a FastAPI BackgroundTask right after start_journey() returns.
+
+        Every checkpoint is persisted (and broadcast, via self.events) the
+        moment its location is known, description="" - before its AI
+        description exists - so the frontend can show its pin right away
+        with a "generating…" marker (TripDetailPage.tsx's SSE subscription
+        to GET /api/journey/{trip_id}/events). Each checkpoint's
+        description generation is then handed to a small thread pool
+        rather than run inline in the (Nominatim-rate-limited) discovery
+        loop, so a slow AI call for checkpoint 2 never delays discovering
+        checkpoint 3 down the route - descriptions arrive out of order,
+        independently, as their own model calls finish.
+
+        Opens its own short-lived sessions throughout (same rule as every
+        other method here) rather than one held for the whole job, since
+        this can run for a while. Wrapped in a broad try/finally: whatever
+        checkpoints were found before an unexpected failure (a real bug,
+        not the already-handled "no city here"/"description API down"
+        cases) still get marked ready rather than leaving a trip stuck
+        "generating" forever - a client's GET /api/journey/{trip_id}/
+        events would otherwise hang indefinitely waiting for a
+        checkpoints_ready that never comes."""
+        with SessionLocal() as session:
+            trip = trips.get_trip_by_id(session, trip_id)
+            if trip is None:
+                return  # deleted (or never existed) - nothing left to do
+            route, _progress = _locate(trip)
+
+        description_futures = []
+        try:
+            with ThreadPoolExecutor(max_workers=3, thread_name_prefix="checkpoint-description") as executor:
+                def on_checkpoint_found(checkpoint: Checkpoint) -> None:
+                    with SessionLocal() as session:
+                        row = trips.add_checkpoint(session, trip_id, checkpoint)
+                    self.events.notify(f"trip_checkpoints:{trip_id}", {"type": "checkpoint_added", "checkpoint": _checkpoint_state(row)})
+                    description_futures.append(executor.submit(self._describe_checkpoint, trip_id, row.id, checkpoint))
+
+                generate_checkpoints_progressive(route, self._geocoder, on_checkpoint_found)
+                for future in description_futures:
+                    future.result()  # propagates nowhere (each already catches its own errors) - just waits for the pool to drain
+        except Exception as e:
+            print(f"⚠️  generate_checkpoints_for_trip({trip_id}) failed partway through: {type(e).__name__}: {e}")
+        finally:
+            with SessionLocal() as session:
+                trip = trips.get_trip_by_id(session, trip_id)
+                if trip is not None:
+                    trips.mark_checkpoints_ready(session, trip)
+            self.events.notify(f"trip_checkpoints:{trip_id}", {"type": "checkpoints_ready"})
+
+    def _describe_checkpoint(self, trip_id: uuid.UUID, checkpoint_id: uuid.UUID, checkpoint: Checkpoint) -> None:
+        """One checkpoint's AI description, generated and persisted off
+        the main discovery loop - see generate_checkpoints_for_trip()'s
+        thread pool above. generate_description() already degrades to a
+        plain fallback line on a model/network failure, so this never
+        leaves a checkpoint stuck "pending"."""
+        described = generate_description(checkpoint, self._describer)
+        with SessionLocal() as session:
+            row = trips.set_checkpoint_description(session, checkpoint_id, described.description)
+            if row is None:
+                return  # checkpoint (or its trip) was deleted while this was in flight
+            state = _checkpoint_state(row)
+        self.events.notify(f"trip_checkpoints:{trip_id}", {"type": "checkpoint_updated", "checkpoint": state})
 
     def record_steps(self, user_id: uuid.UUID, steps: int, interval=None) -> list[dict]:
         """Real steps happen once but can count toward several trips at
@@ -211,6 +293,21 @@ class TravelFacade:
                 raise ValueError(f"No trip {trip_id!r} for user_id={user_id!r}")
             return self._build_map_state(trip)
 
+    def get_checkpoint_backlog(self, user_id: uuid.UUID, trip_id: uuid.UUID) -> tuple[list[dict], bool]:
+        """Whatever checkpoints generate_checkpoints_for_trip() has
+        persisted for this trip so far, plus whether it's finished - GET
+        /api/journey/{trip_id}/events's (app.py) starting snapshot before
+        it subscribes for live checkpoint_added/checkpoint_updated events,
+        so a client connecting mid-generation (or well after it finished)
+        still sees every checkpoint that already exists. user_id-scoped,
+        same as get_map_state() - this is a user-facing endpoint, unlike
+        generate_checkpoints_for_trip() itself."""
+        with SessionLocal() as session:
+            trip = trips.get_trip(session, trip_id, user_id)
+            if trip is None:
+                raise ValueError(f"No trip {trip_id!r} for user_id={user_id!r}")
+            return [_checkpoint_state(c) for c in trip.checkpoints], trip.checkpoints_ready_at is not None
+
     def list_trips(self, user_id: uuid.UUID) -> list[dict]:
         """Every trip belonging to this user (in progress or finished),
         summarized for the trips list UI - no per-trip network calls, just
@@ -240,6 +337,14 @@ class TravelFacade:
             if trip is None:
                 raise ValueError(f"No trip {trip_id!r} for user_id={user_id!r}")
             trips.delete_trip(session, trip)
+
+    def lifetime_steps(self, user_id: uuid.UUID) -> int:
+        """Total steps this user has ever logged across every trip
+        they've run - the Profile screen's one stat. A thin passthrough
+        (see data/total_distance_db.py's lifetime_steps) so app.py still
+        only ever talks to this facade, matching every other method
+        here."""
+        return self._db.lifetime_steps(str(user_id))
 
     def delete_journeys(self, user_id: uuid.UUID, trip_ids: list[uuid.UUID]) -> int:
         """Deletes whichever of trip_ids actually belong to this user and
@@ -277,6 +382,19 @@ class TravelFacade:
             self.events.notify(
                 "landmark", f"🏁 Landmark reached: {checkpoint.name} ({percent}% of the way there!)"
             )
+            checkpoint_event = CheckpointReachedEvent(
+                user_id=trip.user_id,
+                user_name=trip.user.email or "Traveler",
+                checkpoint_name=checkpoint.name,
+                checkpoint_number=checkpoint.checkpoint_number,
+                description=checkpoint.description,
+            )
+            # [TEMP DEBUG] remove before deploying - see notification-flow testing
+            print(
+                f"📣 [TEMP DEBUG] Emitting CheckpointReachedEvent: user={checkpoint_event.user_name} "
+                f"checkpoint=#{checkpoint_event.checkpoint_number} '{checkpoint_event.checkpoint_name}'"
+            )
+            self.events.notify("checkpoint_reached", checkpoint_event)
 
         for milestone in milestones_just_crossed(progress.percent_complete, set(trip.milestones_notified)):
             trips.mark_milestone_notified(session, trip, milestone)
@@ -326,6 +444,13 @@ class TravelFacade:
             "today_steps": self._db.today_steps(trip_id_str),
             "started_at": trip.started_at.isoformat(),
             "elapsed_seconds": elapsed_seconds,
+            # False right after start_journey() - checkpoints is still []
+            # at that point, being filled in by generate_checkpoints_for_
+            # trip() (a FastAPI background task, see app.py) - lets the
+            # frontend know whether to open GET /api/journey/{id}/events
+            # at all (a trip loaded well after the fact has nothing left
+            # to stream).
+            "checkpoints_ready": trip.checkpoints_ready_at is not None,
             "checkpoints": [_checkpoint_state(c) for c in trip.checkpoints],
         }
 
@@ -423,6 +548,7 @@ def _checkpoint_state(checkpoint: TripCheckpoint) -> dict:
         "coords": {"lat": checkpoint.lat, "lng": checkpoint.lng},
         "distance_from_start_m": checkpoint.distance_from_start_m,
         "description": checkpoint.description,
+        "description_status": checkpoint.description_status,
         "hit": checkpoint.hit_at is not None,
         "hit_at": checkpoint.hit_at.isoformat() if checkpoint.hit_at is not None else None,
     }

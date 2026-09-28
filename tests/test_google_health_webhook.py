@@ -6,12 +6,15 @@
 # FastAPI app (not app.py) - same pattern as tests/test_auth_router.py.
 #
 # process_notification() resolves the WorldWalker user from the
-# notification's own "user": "users/{healthUserId}" field (Google's own
-# identity - the only one a webhook ever carries) via
-# auth.connections.get_user_id_for_provider_user_id(), never "whichever
-# connection happens to be active." Most tests here use the
-# connected_user_id fixture (tests/conftest.py) - a User with an active
-# GoogleHealthConnection whose provider_user_id is f"test-provider-{user_id}".
+# notification's own "healthUserId" field (Google's own identity - the
+# only one a webhook ever carries, confirmed against a real production
+# payload and developers.google.com/health/webhooks - NOT a "user":
+# "users/{healthUserId}" field, an earlier never-actually-verified
+# assumption) via auth.connections.get_user_id_for_provider_user_id(),
+# never "whichever connection happens to be active." Most tests here use
+# the connected_user_id fixture (tests/conftest.py) - a User with an
+# active GoogleHealthConnection whose provider_user_id is
+# f"test-provider-{user_id}".
 
 import uuid
 from math import degrees
@@ -22,7 +25,6 @@ from fastapi.testclient import TestClient
 
 import services.google_health.webhook as webhook_module
 from core.facade import travel_facade
-from data.total_distance_db import TotalDistanceDB
 from database.models import GoogleHealthConnection, User
 from services.google_health.webhook import (
     router,
@@ -53,8 +55,10 @@ def _provider_user_id(user_id) -> str:
     return f"test-provider-{user_id}"
 
 
-def _google_user(user_id) -> str:
-    return f"users/{_provider_user_id(user_id)}"
+def _health_user_id(user_id) -> str:
+    """The plain healthUserId value a real notification carries - no
+    "users/" prefix, no wrapping "user" key (see this file's header)."""
+    return _provider_user_id(user_id)
 
 
 def _connect_new_user(session) -> uuid.UUID:
@@ -90,16 +94,17 @@ def _route() -> Route:
 
 
 @pytest.fixture
-def active_journey(connected_user_id, seed_trip, tmp_path, monkeypatch):
-    """A real (non-mocked) TravelFacade trip + a temp step-sync DB, so a
-    test can prove data actually lands in the database, not just that a
-    function was called. Route points are ~100km apart on the same
-    meridian - close enough to 100_000.0m real haversine that record_steps'
-    default stride can't overshoot the route in one call.
+def active_journey(connected_user_id, seed_trip):
+    """A real (non-mocked) TravelFacade trip, so a test can prove data
+    actually lands in the database, not just that a function was called.
+    Route points are ~100km apart on the same meridian - close enough to
+    100_000.0m real haversine that record_steps' default stride can't
+    overshoot the route in one call. travel_facade's step-sync log is
+    Postgres-backed (data/total_distance_db.py) and already isolated
+    inside this test's own rolled-back transaction via patched_session.
 
     Returns (user_id, trip) - today_steps/total_steps are keyed by trip_id
     now (data/total_distance_db.py), not user_id, so callers need both."""
-    monkeypatch.setattr(travel_facade, "_db", TotalDistanceDB(str(tmp_path / "steps.db")))
     trip = seed_trip(connected_user_id, _route())
     return connected_user_id, trip
 
@@ -138,7 +143,7 @@ def test_notification_pulls_data_for_each_interval_and_routes_it(active_journey,
     notification = {
         "dataType": "steps",
         "operation": "UPSERT",
-        "user": _google_user(user_id),
+        "healthUserId": _health_user_id(user_id),
         "intervals": [{"physicalTimeInterval": {"startTime": "2026-09-01T15:00:00Z", "endTime": "2026-09-01T16:00:00Z"}}],
     }
     process_notification(notification)
@@ -147,12 +152,32 @@ def test_notification_pulls_data_for_each_interval_and_routes_it(active_journey,
     assert "1250 steps" in capsys.readouterr().out
 
 
+def test_notification_matches_the_real_google_payload_shape(active_journey, monkeypatch, capsys):
+    """A literal example straight from developers.google.com/health/webhooks
+    (a plain "healthUserId" string, no "user"/"users/" wrapping) - guards
+    against ever reverting to the earlier, never-actually-verified format
+    that silently dropped every real notification in production."""
+    user_id, _trip = active_journey
+    monkeypatch.setattr(webhook_module, "get_data_points", lambda *a, **k: [STEPS_POINT])
+
+    notification = {
+        "healthUserId": _health_user_id(user_id),
+        "operation": "UPSERT",
+        "dataType": "steps",
+        "intervals": [{"physicalTimeInterval": {"startTime": "2026-03-08T01:29:00Z", "endTime": "2026-03-08T01:34:00Z"}}],
+    }
+    process_notification(notification)
+
+    assert "1250 steps" in capsys.readouterr().out
+    assert "can't tell which WorldWalker account" not in capsys.readouterr().out
+
+
 def test_notification_missing_data_type_is_handled_gracefully(capsys):
-    process_notification({"operation": "UPSERT", "user": "users/whoever", "intervals": []})
+    process_notification({"operation": "UPSERT", "healthUserId": "whoever", "intervals": []})
     assert "Notification missing dataType" in capsys.readouterr().out
 
 
-def test_notification_missing_user_field_is_skipped(capsys):
+def test_notification_missing_health_user_id_is_skipped(capsys):
     notification = {
         "dataType": "steps",
         "operation": "UPSERT",
@@ -172,7 +197,7 @@ def test_notification_for_an_unknown_google_account_is_skipped(patched_session, 
     notification = {
         "dataType": "steps",
         "operation": "UPSERT",
-        "user": "users/never-connected",
+        "healthUserId": "never-connected",
         "intervals": [{"physicalTimeInterval": {"startTime": "2026-09-01T15:00:00Z", "endTime": "2026-09-01T16:00:00Z"}}],
     }
     process_notification(notification)
@@ -194,7 +219,7 @@ def test_notification_resolves_to_the_matching_user_not_another_connected_one(
     notification = {
         "dataType": "steps",
         "operation": "UPSERT",
-        "user": _google_user(user_a_id),
+        "healthUserId": _health_user_id(user_a_id),
         "intervals": [{"physicalTimeInterval": {"startTime": "2026-09-01T15:00:00Z", "endTime": "2026-09-01T16:00:00Z"}}],
     }
     process_notification(notification)
@@ -217,7 +242,7 @@ def test_notification_pull_failure_logs_cleanly_instead_of_raising(active_journe
     notification = {
         "dataType": "sleep",
         "operation": "UPSERT",
-        "user": _google_user(user_id),
+        "healthUserId": _health_user_id(user_id),
         "intervals": [{"physicalTimeInterval": {"startTime": "2026-09-01T05:00:00Z", "endTime": "2026-09-01T13:00:00Z"}}],
     }
     process_notification(notification)  # must not raise
@@ -237,7 +262,7 @@ def test_webhook_acks_204_and_schedules_background_pull(patched_session, monkeyp
         "data": {
             "dataType": "steps",
             "operation": "UPSERT",
-            "user": "users/never-connected",
+            "healthUserId": "never-connected",
             "intervals": [{"physicalTimeInterval": {"startTime": "2026-09-01T15:00:00Z", "endTime": "2026-09-01T16:00:00Z"}}],
         }
     }]

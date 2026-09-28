@@ -92,9 +92,10 @@ def patched_session(db_session, monkeypatch):
     same_session_every_time = _SameSessionEveryTime(db_session)
     monkeypatch.setattr("core.facade.SessionLocal", same_session_every_time)
     monkeypatch.setattr("services.google_health.webhook.SessionLocal", same_session_every_time)
-    monkeypatch.setattr("app.SessionLocal", same_session_every_time)
     monkeypatch.setattr("accounts.dependencies.SessionLocal", same_session_every_time)
     monkeypatch.setattr("accounts.router.SessionLocal", same_session_every_time)
+    monkeypatch.setattr("core.observer_decorator.email_alerts_listener.SessionLocal", same_session_every_time)
+    monkeypatch.setattr("data.total_distance_db.SessionLocal", same_session_every_time)
     return db_session
 
 
@@ -185,7 +186,9 @@ def seed_checkpoint(patched_session):
     """Factory fixture: seed_checkpoint(trip, name, distance_from_start_m)
     inserts one trip_checkpoints row, unhit, for a test to later walk past."""
 
-    def _seed(trip: ActiveTrip, name: str, distance_from_start_m: float, checkpoint_number: int = 1) -> TripCheckpoint:
+    def _seed(
+        trip: ActiveTrip, name: str, distance_from_start_m: float, checkpoint_number: int = 1, description: str = ""
+    ) -> TripCheckpoint:
         checkpoint = TripCheckpoint(
             trip_id=trip.id,
             checkpoint_number=checkpoint_number,
@@ -193,7 +196,7 @@ def seed_checkpoint(patched_session):
             lat=trip.start_lat,
             lng=trip.start_lng,
             distance_from_start_m=distance_from_start_m,
-            description="",
+            description=description,
             hit_at=None,
         )
         patched_session.add(checkpoint)

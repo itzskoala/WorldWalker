@@ -1,70 +1,83 @@
 # app.py
 # The web UI. Owns no travel/auth logic itself - every action here reports
 # to core.facade.travel_facade (journey state) or auth.google_health_auth
-# (the Google Health OAuth flow). Pure FastAPI + a static Google-Flights-
-# styled frontend (web/) - no UI framework dependency.
+# (the Google Health OAuth flow). FastAPI backend + a React/TypeScript/
+# Vite frontend (frontend/, built to frontend/dist/) - this file serves
+# that build's static assets and hands every non-API GET to its
+# index.html, letting react-router (frontend/src/App.tsx) decide what to
+# render client-side.
 
+import json
+import os
+import queue
 import uuid
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, Query
-from fastapi.responses import JSONResponse, Response
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
-from starlette.requests import Request
 
 from travel_logic.coordinates import Coordinates
 from travel_logic.geocoder import NominatimGeocoder
 from accounts.dependencies import get_current_user
 from accounts.router import router as accounts_router
-from auth.connections import get_active_user_id
 from auth.router import router as auth_router
+from core.observer_decorator.event_listener import EventListener
 from database.models import User
-from database.session import SessionLocal
+from notifications.router import router as notifications_router
 from services.google_health.webhook import router as webhook_router
 from data.intake import IntakeRequest, start_journey_from_intake
 from core.facade import travel_facade
 
 ROOT = Path(__file__).resolve().parent
-WEB_DIR = ROOT / "web"
+FRONTEND_DIST = ROOT / "frontend" / "dist"
+# Routers below own these prefixes - a request under one of them that
+# reaches the catch-all SPA route at the bottom of this file (nothing
+# matched) is a real 404, not "serve index.html and let react-router
+# sort it out".
+API_PREFIXES = ("api/", "auth/", "notifications/")
 
 app = FastAPI(title="WorldWalker")
 app.include_router(accounts_router)
 app.include_router(auth_router)
 app.include_router(webhook_router)
-app.mount("/static", StaticFiles(directory=WEB_DIR / "static"), name="static")
-templates = Jinja2Templates(directory=WEB_DIR / "templates")
+app.include_router(notifications_router)
+app.mount("/assets", StaticFiles(directory=FRONTEND_DIST / "assets"), name="frontend-assets")
+# Everything under frontend/public/ (favicon aside) - e.g. the auth
+# hero photos (frontend/public/images/) - lands at dist's root next to
+# assets/, same as /assets above, or the SPA catch-all below would serve
+# index.html for these paths instead of the actual file.
+app.mount("/images", StaticFiles(directory=FRONTEND_DIST / "images"), name="frontend-images")
 
 _geocoder = NominatimGeocoder()
 
 
-# The OAuth consent URL is per-WorldWalker-user now (its state is bound
-# to whoever's logged in - see auth/google_health_auth.py), so it can't
-# be precomputed at import time or known for an unauthenticated page
-# load. web/static/js/app.js fetches one from POST /auth/google/start
-# (with the logged-in user's bearer token) when the Connect button is
-# clicked, instead of this template rendering a real href.
-def _is_connected() -> bool:
-    """Whether the site's one Google Health connection is currently
-    active - checked fresh on every request, since this can flip from
-    one request to the next as the user connects/disconnects. Not yet
-    scoped to the logged-in user (this route runs before the frontend's
-    login check) - only used for the pre-login page shell's initial
-    render, same as before login existed."""
-    with SessionLocal() as session:
-        try:
-            get_active_user_id(session)
-            return True
-        except RuntimeError:
-            return False
+def _google_signin_client_id() -> str:
+    """Public (not secret) - the client ID GIS needs in the browser to
+    render the Google button (frontend/src/components/GoogleSignInButton.tsx).
+    Empty means Google sign-in isn't configured for this deployment; that
+    component hides the button rather than rendering one that can't work."""
+    return os.environ.get("GOOGLE_SIGNIN_CLIENT_ID", "")
 
 
-@app.get("/")
-def index(request: Request):
-    return templates.TemplateResponse(
-        request, "index.html", {"connect_url": None, "is_connected": _is_connected()}
-    )
+def _apple_signin_client_id() -> str:
+    """Public (not secret) - the Services ID Apple's JS SDK needs to
+    render the real Sign in with Apple button
+    (frontend/src/components/AppleSignInButton.tsx). Empty means it isn't
+    configured yet (no backend callback exists for it either) - that
+    component still renders the real button chrome, just without calling
+    AppleID.auth.init(), so it looks right without pretending to work."""
+    return os.environ.get("APPLE_SIGNIN_CLIENT_ID", "")
+
+
+# The frontend has no server-side templating, so it can't have
+# google_client_id baked into its HTML - it fetches this instead, once,
+# on the login/signup pages. Same value, same "empty means not
+# configured" contract the old Jinja2 templates used.
+@app.get("/api/config")
+def public_config():
+    return {"google_client_id": _google_signin_client_id(), "apple_client_id": _apple_signin_client_id()}
 
 
 def _place_suggestion(display_name: str) -> dict:
@@ -97,7 +110,7 @@ class JourneyStartRequest(BaseModel):
 
 
 @app.post("/api/journey/start")
-def start_journey(body: JourneyStartRequest, current_user: User = Depends(get_current_user)):
+def start_journey(body: JourneyStartRequest, background_tasks: BackgroundTasks, current_user: User = Depends(get_current_user)):
     if not body.from_place or not body.to_place:
         return JSONResponse({"error": "Pick both a starting point and a destination."}, status_code=400)
 
@@ -112,28 +125,118 @@ def start_journey(body: JourneyStartRequest, current_user: User = Depends(get_cu
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=400)
     except Exception as e:
-        # Real external dependencies (geocoding, routing, AI descriptions)
-        # can fail at runtime - fail soft with a friendly message instead
-        # of a 500.
+        # Real external dependencies (geocoding, routing) can fail at
+        # runtime - fail soft with a friendly message instead of a 500.
         print(f"⚠️  /api/journey/start failed: {type(e).__name__}: {e}")
         return JSONResponse({"coming_soon": True}, status_code=200)
 
-    # The full map-ready state (route polyline, start/end, checkpoints,
-    # metrics) - web/static/js/trip.js needs all of it to draw the map,
-    # not just a text summary.
+    # The map/route is the critical path (state["checkpoints"] is always
+    # [] here - start_journey_from_intake() no longer waits on checkpoint
+    # discovery or AI descriptions, see core/facade.py's start_journey()).
+    # That slow part runs after this response is on its way back to the
+    # browser; frontend/src/pages/TripDetailPage.tsx picks it up live via
+    # GET /api/journey/{trip_id}/events.
+    background_tasks.add_task(travel_facade.generate_checkpoints_for_trip, uuid.UUID(state["trip_id"]))
+
     return {"coming_soon": False, **state}
+
+
+def _sse_message(event: str, data: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+
+class _CheckpointEventListener(EventListener):
+    """One per open /api/journey/{trip_id}/events connection - EventManager
+    (core/observer_decorator/event_manager.py) calls update() from
+    whatever thread is running generate_checkpoints_for_trip()
+    (core/facade.py), on the trip's own generate_checkpoints_for_trip
+    background task thread; this SSE route reads back out of the queue on
+    its own request-handling thread. A plain queue.Queue is the
+    thread-safe handoff between the two."""
+
+    def __init__(self):
+        self.queue: "queue.Queue[dict]" = queue.Queue()
+
+    def update(self, data) -> None:
+        self.queue.put(data)
+
+
+# 25s: comfortably under most proxies'/browsers' idle-connection timeouts,
+# short enough that a client that vanished (closed tab, lost network) gets
+# noticed reasonably soon via the generator's GeneratorExit rather than
+# leaking a subscribed listener for the life of the process.
+SSE_KEEPALIVE_SECONDS = 25
+
+
+@app.get("/api/journey/{trip_id}/events")
+def journey_events(trip_id: uuid.UUID, current_user: User = Depends(get_current_user)):
+    """Live checkpoint_added/checkpoint_updated/checkpoints_ready events
+    for one trip, while core.facade.TravelFacade.generate_checkpoints_for_
+    trip() (kicked off by /api/journey/start above) discovers checkpoints
+    and generates their AI descriptions in the background - the
+    progressive-reveal half of "instant map, checkpoints/descriptions fill
+    in as they're ready" (frontend/src/pages/TripDetailPage.tsx). Ownership
+    is checked the same way journey_state() above does, via
+    get_checkpoint_backlog()'s trips.get_trip(session, trip_id, user_id).
+
+    Subscribes BEFORE reading the current checkpoint list, not after -
+    otherwise a checkpoint created in between those two steps would be
+    silently missed. The live loop then skips re-sending any
+    checkpoint_added already covered by that starting snapshot (by
+    checkpoint_number), so that ordering doesn't turn into a duplicate
+    marker instead."""
+    event_type = f"trip_checkpoints:{trip_id}"
+    listener = _CheckpointEventListener()
+    travel_facade.events.subscribe(event_type, listener)
+
+    try:
+        backlog, already_ready = travel_facade.get_checkpoint_backlog(current_user.id, trip_id)
+    except ValueError:
+        travel_facade.events.unsubscribe(event_type, listener)
+        return JSONResponse({"error": "No such trip."}, status_code=404)
+
+    def event_stream():
+        try:
+            backlog_numbers = set()
+            for checkpoint in backlog:
+                backlog_numbers.add(checkpoint["checkpoint_number"])
+                yield _sse_message("checkpoint_added", {"checkpoint": checkpoint})
+
+            if already_ready:
+                yield _sse_message("checkpoints_ready", {})
+                return
+
+            while True:
+                try:
+                    event = listener.queue.get(timeout=SSE_KEEPALIVE_SECONDS)
+                except queue.Empty:
+                    yield ": keep-alive\n\n"
+                    continue
+
+                if event["type"] == "checkpoint_added" and event["checkpoint"]["checkpoint_number"] in backlog_numbers:
+                    continue  # already sent in the starting snapshot above
+                yield _sse_message(event["type"], {k: v for k, v in event.items() if k != "type"})
+                if event["type"] == "checkpoints_ready":
+                    return
+        finally:
+            travel_facade.events.unsubscribe(event_type, listener)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.get("/api/journey/state")
 def journey_state(trip_id: uuid.UUID, current_user: User = Depends(get_current_user)):
-    """Polled by web/static/js/trip.js while a trip is on screen - the same
-    map-ready shape start_journey() returns, always with every checkpoint
-    included (tagged hit: true/false), not just the hit ones. Filtering
-    that down to "only what a normal user should see" is the frontend's
-    job (see web/static/js/trip.js and dev_testing/TRIP_MAP.md's ?debug=1
-    flag), not this endpoint's. A user can have several trips going at
-    once now, so trip_id says which one - see web/static/js/trip.js's
-    show()."""
+    """Polled by frontend/src/pages/TripDetailPage.tsx while a trip is on
+    screen - the same map-ready shape start_journey() returns, always with
+    every checkpoint included (tagged hit: true/false), not just the hit
+    ones. Filtering that down to "only what a normal user should see" is
+    the frontend's job (see TripDetailPage.tsx and dev_testing/TRIP_MAP.md's
+    ?debug=1 flag), not this endpoint's. A user can have several trips
+    going at once now, so trip_id says which one."""
     try:
         return travel_facade.get_map_state(current_user.id, trip_id)
     except ValueError:
@@ -143,9 +246,18 @@ def journey_state(trip_id: uuid.UUID, current_user: User = Depends(get_current_u
 @app.get("/api/journey/list")
 def journey_list(current_user: User = Depends(get_current_user)):
     """Every trip belonging to the logged-in user, active or finished -
-    web/static/js/app.js's trips panel splits this into "Active" (status
-    active/paused) and "Past" (completed/abandoned) sections client-side."""
+    frontend/src/pages/HomePage.tsx's My Journeys screen splits this into
+    "Active" (status active/paused) and "Completed" sections client-side."""
     return {"trips": travel_facade.list_trips(current_user.id)}
+
+
+@app.get("/api/journey/stats")
+def journey_stats(current_user: User = Depends(get_current_user)):
+    """The Profile screen's one journey-derived stat - kept separate from
+    /api/journey/list (which every screen calls) since only Profile needs
+    it and it's a different kind of read (one aggregate, not per-trip
+    rows)."""
+    return {"lifetime_steps": travel_facade.lifetime_steps(current_user.id)}
 
 
 @app.post("/api/journey/{trip_id}/pause")
@@ -183,6 +295,20 @@ def delete_journeys(body: JourneyDeleteBulkRequest, current_user: User = Depends
     the frontend firing a DELETE per selected card."""
     deleted_count = travel_facade.delete_journeys(current_user.id, body.trip_ids)
     return {"deleted": deleted_count}
+
+
+# Every page route (/, /login, /signup, and anything react-router adds
+# later) is this same file - a plain SPA shell with no server-injected
+# state. Registered dead last, after every real route/router above (route
+# matching is registration order, not specificity) so it only ever
+# catches what nothing else claimed; still explicitly excludes the API
+# prefixes so a genuinely missing API route 404s instead of silently
+# getting HTML back.
+@app.get("/{full_path:path}")
+def spa(full_path: str):
+    if full_path.startswith(API_PREFIXES):
+        raise HTTPException(status_code=404)
+    return FileResponse(FRONTEND_DIST / "index.html")
 
 
 if __name__ == "__main__":

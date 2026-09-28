@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🌍</text></svg>" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WorldWalker</title>
+
+    <!-- Applied before first paint so the page never flashes the wrong
+         theme on load - see src/hooks/useTheme.ts for the toggle itself.
+         Dark is the default look; a saved preference always wins. -->
+    <script>
+      (function () {
+        try {
+          var saved = localStorage.getItem("ww-theme");
+          document.documentElement.setAttribute("data-theme", saved || "dark");
+        } catch (e) {}
+      })();
+    </script>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&family=Google+Sans+Text:wght@400;500;700&family=Roboto:wght@400;500&display=swap" rel="stylesheet" />
+    <!-- MapLibre's own CSS is imported from the npm package instead of a
+         CDN (src/components/tripMap.ts) - keeps the JS/CSS versions in
+         lockstep, unlike the vanilla app's CDN pairing. -->
+
+    <!-- The trip map's tile host (src/components/tripMap.ts's MAP_STYLE) -
+         opening the connection while someone's still filling out the
+         Create form (see CreatePage.tsx's warm-up fetch of the style JSON
+         itself) means TripDetailPage's real map isn't paying for DNS/TLS
+         setup on top of the tile requests once "Start Walking" is
+         clicked. -->
+    <link rel="preconnect" href="https://tiles.openfreemap.org" crossorigin />
+
+    <!-- The Create tab's header globe (src/components/WorldWindGlobe.tsx)
+         - a real NASA WebWorldWind globe, not an iframe/image. If this
+         CDN is ever unreachable, window.WorldWind is simply undefined and
+         that component no-ops (a plain dark band via CSS), nothing
+         crashes. -->
+    <script src="https://files.worldwind.arc.nasa.gov/artifactory/web/0.9.0/worldwind.min.js"></script>
+
+    <!-- Google Identity Services - the "Continue with Google" button
+         (src/components/GoogleSignInButton.tsx). Harmless to load even
+         when no client ID is configured; that component just never calls
+         it in that case. -->
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
+
+    <!-- Sign in with Apple JS - the real Apple button
+         (src/components/AppleSignInButton.tsx). Same "harmless to load
+         unconfigured" contract as Google's script above. -->
+    <script src="https://appleid.cdn-apple.com/appleauth/static/jsapi/appleid/1/en_US/appleid.auth.js" async defer></script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

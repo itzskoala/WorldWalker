@@ -82,6 +82,12 @@ def create_trip(
                 lng=checkpoint.coordinates.lng,
                 distance_from_start_m=checkpoint.distance_from_start_m,
                 description=checkpoint.description,
+                # This whole-list-at-once path (checkpoints already fully
+                # described, e.g. seed_trip in tests) has no "still
+                # generating" window - only generate_checkpoints_for_trip's
+                # one-at-a-time add_checkpoint()/set_checkpoint_description()
+                # below actually uses "pending".
+                description_status="ready",
                 hit_at=None,
             )
         )
@@ -96,6 +102,60 @@ def get_trip(session: Session, trip_id: uuid.UUID, user_id: uuid.UUID) -> Active
     let one user read or mutate another's trip."""
     statement = select(ActiveTrip).where(ActiveTrip.id == trip_id, ActiveTrip.user_id == user_id)
     return session.execute(statement).scalar_one_or_none()
+
+
+def get_trip_by_id(session: Session, trip_id: uuid.UUID) -> ActiveTrip | None:
+    """Unscoped by user - only for the background checkpoint-generation
+    job (core/facade.py's generate_checkpoints_for_trip()), which runs
+    with a trip_id it just minted itself (from start_journey(), in the
+    same request), never one a client supplied. Every user-facing path
+    still goes through get_trip() above."""
+    return session.get(ActiveTrip, trip_id)
+
+
+def add_checkpoint(session: Session, trip_id: uuid.UUID, checkpoint: Checkpoint) -> TripCheckpoint:
+    """Persists one checkpoint the moment its location is known - before
+    its AI description exists yet (description_status starts "pending" so
+    the map can show its pin right away) - see generate_checkpoints_for_
+    trip()'s progressive discovery."""
+    row = TripCheckpoint(
+        trip_id=trip_id,
+        checkpoint_number=checkpoint.checkpoint_number,
+        name=checkpoint.name,
+        lat=checkpoint.coordinates.lat,
+        lng=checkpoint.coordinates.lng,
+        distance_from_start_m=checkpoint.distance_from_start_m,
+        description="",
+        description_status="pending",
+        hit_at=None,
+    )
+    session.add(row)
+    session.commit()
+    session.refresh(row)
+    return row
+
+
+def set_checkpoint_description(session: Session, checkpoint_id: uuid.UUID, description: str) -> TripCheckpoint | None:
+    """Fills in a checkpoint's AI description once it's ready (real or the
+    plain fallback line - either way there's real text now) and flips it
+    out of "pending". None if the checkpoint (or its trip) was deleted out
+    from under a still-running background job."""
+    row = session.get(TripCheckpoint, checkpoint_id)
+    if row is None:
+        return None
+    row.description = description
+    row.description_status = "ready"
+    session.commit()
+    return row
+
+
+def mark_checkpoints_ready(session: Session, trip: ActiveTrip) -> None:
+    """The background checkpoint-generation job has found every checkpoint
+    along this trip's route - GET /api/journey/{id}/events (app.py) reads
+    this to know a freshly-connecting client won't see any more
+    checkpoint_added/checkpoint_updated events for this trip."""
+    trip.checkpoints_ready_at = datetime.now(timezone.utc)
+    session.commit()
 
 
 def get_active_trips(session: Session, user_id: uuid.UUID) -> list[ActiveTrip]:
@@ -147,6 +207,8 @@ def mark_checkpoints_hit(session: Session, trip: ActiveTrip, distance_walked_m: 
         if just_reached and not already_hit:
             checkpoint.hit_at = datetime.now(timezone.utc)
             newly_hit_checkpoints.append(checkpoint)
+            # [TEMP DEBUG] remove before deploying - see notification-flow testing
+            print(f"🎯 [TEMP DEBUG] Checkpoint detected as reached: #{checkpoint.checkpoint_number} '{checkpoint.name}' (trip={trip.id})")
 
     if newly_hit_checkpoints:
         session.commit()

@@ -1,0 +1,24 @@
+# Vercel CLI deploys use this instead of .gitignore - same excludes,
+# except frontend/dist (gitignored, since it's a local build artifact,
+# but it's exactly what app.py serves in production - see vercel.json's
+# includeFiles - so it must NOT be excluded here) and frontend/node_modules
+# (never needed; the dist build is what ships).
+
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.DS_Store
+
+credentials.json
+service-account.json
+.tokens.json
+notes.txt
+Codelab.http
+*.db
+data/geocode_cache.json
+.env
+.env*
+.vercel
+
+frontend/node_modules/

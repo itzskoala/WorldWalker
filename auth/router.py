@@ -3,19 +3,20 @@
 # consent URL for the logged-in WorldWalker user; Google redirects the
 # user's browser straight to /auth/google/callback, which is NOT
 # JWT-protected (Google's redirect can't carry a bearer token) - the
-# OAuth `state` google_health_auth.py issued is what recovers which
-# WorldWalker user this callback belongs to. Included into app.py's
-# FastAPI app, alongside services/google_health/webhook.py's router.
+# OAuth `state` auth/oauth_state.py issued (and persisted in Postgres, so
+# it survives across workers) is what recovers which WorldWalker user
+# this callback belongs to. Included into app.py's FastAPI app, alongside
+# services/google_health/webhook.py's router.
 #
 # Every dependency is called through its module object (google_health_auth,
-# connections) rather than imported by name, so tests can monkeypatch it -
-# see tests/test_auth_router.py.
+# connections, oauth_state) rather than imported by name, so tests can
+# monkeypatch it - see tests/test_auth_router.py.
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse
 
 from accounts.dependencies import get_current_user
-from auth import connections, google_health_auth
+from auth import connections, google_health_auth, oauth_state
 from database.models import User
 from database.session import SessionLocal
 
@@ -24,7 +25,9 @@ router = APIRouter()
 
 @router.post("/auth/google/start")
 def google_start(current_user: User = Depends(get_current_user)):
-    return {"auth_url": google_health_auth.build_auth_url(current_user.id)}
+    with SessionLocal() as session:
+        state = oauth_state.issue_state(session, current_user.id)
+    return {"auth_url": google_health_auth.build_auth_url(state)}
 
 
 @router.get("/auth/google/callback")
@@ -38,7 +41,10 @@ def google_callback(request: Request):
 
     code = params.get("code")
     state = params.get("state")
-    user_id = google_health_auth.consume_state(state) if state else None
+    user_id = None
+    if state:
+        with SessionLocal() as session:
+            user_id = oauth_state.consume_state(session, state)
 
     if not code or user_id is None:
         print("🔐 auth: callback rejected - missing code, or invalid/expired/reused state")
@@ -76,6 +82,22 @@ def google_callback(request: Request):
         '<meta http-equiv="refresh" content="3;url=/">'
         "<h1>Connected!</h1><p>Taking you back to WorldWalker...</p>"
     )
+
+
+@router.get("/auth/google/status")
+def google_status(current_user: User = Depends(get_current_user)):
+    """Whether the logged-in user has an active Google Health connection -
+    what the connect/disconnect toggle button (frontend/src/components/
+    Topbar.tsx) reads once a real session exists (there's no user to ask
+    about before that - the page itself carries no server-rendered state
+    at all any more, see app.py's spa() route) - the only source of truth
+    for that button."""
+    with SessionLocal() as session:
+        try:
+            connections.get_active_connection(session, current_user.id)
+            return {"connected": True}
+        except RuntimeError:
+            return {"connected": False}
 
 
 @router.post("/auth/google/disconnect")

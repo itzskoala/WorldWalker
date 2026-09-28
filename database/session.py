@@ -18,5 +18,11 @@ if not DATABASE_URL:
         "or export DATABASE_URL yourself."
     )
 
-engine = create_engine(DATABASE_URL)
+# pool_pre_ping: Neon (and most managed Postgres) closes idle connections
+# server-side - without this, a serverless function reusing a warm
+# container picks a dead connection back out of the pool and fails with
+# psycopg.OperationalError ("SSL connection has been closed
+# unexpectedly") instead of transparently reconnecting. Confirmed live in
+# production (2026-09-23) on /auth/signup right after a migration.
+engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
