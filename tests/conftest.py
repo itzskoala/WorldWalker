@@ -69,10 +69,17 @@ class _SameSessionEveryTime:
     `with SameSessionEveryTime() as session:` call hands back this test's
     own db_session instead of opening a real new connection, and never
     closes it - db_session's own teardown (above) rolls the whole test's
-    transaction back. core/facade.py and services/google_health/webhook.py
-    both open their own SessionLocal() internally, so both get patched to
-    this by the patched_session fixture below - every DB write in a test
-    then lands in the one transaction that fixture controls."""
+    transaction back. core/facade.py, services/google_health/webhook.py,
+    accounts/dependencies.py, and accounts/router.py each open their own
+    SessionLocal() internally, so all of them get patched to this by the
+    patched_session fixture below - every DB write in a test then lands
+    in the one transaction that fixture controls, never the real
+    database. Missing one of these here doesn't fail loudly - it quietly
+    reads/writes the real dev database instead of the isolated test
+    transaction (confirmed live: this list was missing accounts.router,
+    and tests/test_accounts.py's /auth/signup tests passed in isolation
+    but failed running together, each one finding the previous test's
+    "walker@example.com" row still there)."""
 
     def __init__(self, session):
         self._session = session
@@ -100,16 +107,28 @@ def patched_session(db_session, monkeypatch):
 
 
 @pytest.fixture
-def auth_headers():
-    """auth_headers(user_id) -> an Authorization header for a valid access
-    token for that user - lets tests reach a JWT-protected route without
-    going through /auth/login."""
-    from accounts.security import create_access_token
+def auth_headers(patched_session):
+    """auth_headers(user_id) -> {} (no real header needed), but as a side
+    effect points app.py's get_current_user dependency override at that
+    user's real DB row for the rest of the test - the Clerk-era
+    replacement for minting a real access token, since there's no way to
+    mint a real Clerk session token in a test. Call sites are unchanged
+    (client.get(..., headers=auth_headers(user_id))); only what happens
+    under the hood is different. Same pattern as tests/test_auth_router.py
+    and tests/test_notifications_router.py's dependency_overrides, except
+    it resolves a real row (patched_session) instead of a bare User()
+    stand-in, since callers here rely on current_user actually owning
+    rows in the DB."""
+    from accounts.dependencies import get_current_user
+    from app import app
 
     def _headers(user_id: uuid.UUID) -> dict:
-        return {"Authorization": f"Bearer {create_access_token(str(user_id))}"}
+        user = patched_session.get(User, user_id)
+        app.dependency_overrides[get_current_user] = lambda: user
+        return {}
 
-    return _headers
+    yield _headers
+    app.dependency_overrides.pop(get_current_user, None)
 
 
 @pytest.fixture
@@ -197,6 +216,15 @@ def seed_checkpoint(patched_session):
             lng=trip.start_lng,
             distance_from_start_m=distance_from_start_m,
             description=description,
+            # Always seeded with a real name already - nothing left for
+            # core/facade.py's checkpoint-metadata pipeline to resolve, so
+            # this must start "ready", not the model's own "pending"
+            # default (which would make a proximity-reveal during a test
+            # claim this checkpoint and submit it to the real background
+            # thread pool, hitting the real geocoder/describer well after
+            # the test's own fixtures have torn down).
+            metadata_status="ready",
+            revealed_at=None,
             hit_at=None,
         )
         patched_session.add(checkpoint)

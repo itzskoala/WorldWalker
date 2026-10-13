@@ -15,7 +15,6 @@ from database.session import SessionLocal
 from services.google_health import client
 from services.fitbitMetrics.fitbit_steps import StepsMetric
 from services.fitbitMetrics.fitbit_exercise import ExerciseMetric
-from services.fitbitMetrics.fitbit_sleep import SleepMetric
 from services.fitbitMetrics.fitbit_user_data import UserMetric
 
 DEFAULT_HOURS = 24
@@ -82,20 +81,8 @@ def main():
         lag = datetime.now(timezone.utc) - datetime.fromisoformat(newest_end.replace("Z", "+00:00"))
         print(f"  newest data point ends {newest_end}  ({lag.total_seconds() / 60:.1f} min ago - Fitbit/Google sync lag, not a bug)")
 
-    # Rollup summary, not raw samples: heart-rate is sampled every few
-    # seconds, so pulling every point for a wide window means dozens of
-    # paginated requests just to see a number - one rollup call instead.
-    hr_summary = client.get_heart_rate_summary(start, end, user_id)
-    if hr_summary:
-        print(f"HEART RATE: avg={hr_summary['avg_bpm']:.0f} bpm  min={hr_summary['min_bpm']:.0f}  max={hr_summary['max_bpm']:.0f}  (server-side rollup)")
-    else:
-        print("HEART RATE: no data in this window")
-
-    sleep = _shaped(SleepMetric, client.get_data_points("sleep", start, end, user_id))
-    print(f"\nSLEEP: {len(sleep)} session(s)  (minutesAsleep/minutesAwake only - Google Health has no sleep score field)")
-    for s in sleep:
-        print(f"  {s.summary.minutes_asleep} min asleep, {s.summary.minutes_awake} min awake  ({s.interval.start_time} -> {s.interval.end_time})")
-
+    # Not heart-rate/sleep: WorldWalker doesn't request those scopes (see
+    # auth/google_health_auth.py's SCOPES) - a pull would just 403.
     exercise = _shaped(ExerciseMetric, client.get_data_points("exercise", start, end, user_id))
     print(f"\nACTIVITY: {len(exercise)} session(s)")
     for e in exercise:

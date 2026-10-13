@@ -20,7 +20,15 @@
 
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&family=Google+Sans+Text:wght@400;500;700&family=Roboto:wght@400;500&display=swap" rel="stylesheet" />
+    <!-- Inter - a neo-grotesque/geometric sans with the clean, tight
+         letterforms the profile redesign's reference mockup used, in
+         place of the old Google Sans pairing. -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+    <!-- Lato - the landing page's own typeface (styles/style.css scopes
+         it to .landing/.marketing-header only, not the app-wide Inter
+         above). No 500/600 weight requested since Lato doesn't ship
+         them; every landing rule uses 400 or 700 instead. -->
+    <link href="https://fonts.googleapis.com/css2?family=Lato:wght@400;700;900&display=swap" rel="stylesheet" />
     <!-- MapLibre's own CSS is imported from the npm package instead of a
          CDN (src/components/tripMap.ts) - keeps the JS/CSS versions in
          lockstep, unlike the vanilla app's CDN pairing. -->

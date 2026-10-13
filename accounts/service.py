@@ -13,7 +13,10 @@ from database.models import User
 # TODO(otp): these back the disabled start_email_signup()/
 # verify_email_signup() below - `import os`, `from datetime import
 # datetime, timedelta, timezone`, and `from database.models import
-# SignupVerification` go with them when this is revived.
+# SignupVerification` go with them when this is revived. Note: the
+# signup_verifications table itself was dropped (migration
+# f89b5d8d5882_drop_dead_signup_verifications_table) while this flow was
+# disabled - reviving this needs that table re-added first.
 # OTP_EXPIRE_MINUTES = int(os.environ.get("OTP_EXPIRE_MINUTES", "10"))
 #
 # # verify_email_signup() deletes the pending row once this many wrong
@@ -61,8 +64,8 @@ def signup(session: Session, email: str, password: str) -> User:
 # the account" flow - disabled in favor of signup() above creating the
 # account directly. accounts/router.py's /signup/start and /signup/verify
 # routes, and accounts/otp_email.py's send_otp_email(), are unused while
-# this is off. The SignupVerification table/model stays as-is so reviving
-# this later is just uncommenting - see accounts/schemas.py's
+# this is off. Reviving this needs the signup_verifications table added
+# back (dropped by migration f89b5d8d5882) - see accounts/schemas.py's
 # SignupStartRequest/SignupVerifyRequest for the matching request shapes.
 #
 # def start_email_signup(session: Session, email: str, password: str) -> str:

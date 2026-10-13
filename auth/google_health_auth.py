@@ -27,13 +27,21 @@ TOKEN_URL = "https://oauth2.googleapis.com/token"
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 REVOKE_URL = "https://oauth2.googleapis.com/revoke"
 
-# Read-only scopes for the 4 metrics WorldWalker tracks, plus .profile to
-# call users.getIdentity (needed for healthUserId - required to create a
-# MANUAL subscription for "sleep", see auth/register_webhook_subscription.py).
+# Read-only scopes for the metrics WorldWalker actually tracks progress
+# with (steps/exercise), plus .profile to call users.getIdentity (needed
+# for healthUserId - how a webhook notification maps back to a
+# WorldWalker user, see auth/connections.py). All 4 Google Health scopes
+# are in Google's Restricted tier (same tier as Gmail/Drive) - every
+# scope requested here must be independently justified and demoed during
+# Google's OAuth verification (see docs/google_oauth_verification.md), so
+# this list deliberately excludes sleep/heart-rate: WorldWalker pulls
+# neither anywhere today (services/fitbitMetrics/fitbit_sleep.py and
+# fitbit_heart_rate.py exist and are tested, just unused) - add them back
+# here, in auth/register_webhook_subscription.py's subscriberConfigs, and
+# in services/google_health/webhook.py's process_health_data() together,
+# once a real feature actually uses that data.
 SCOPES = [
     "https://www.googleapis.com/auth/googlehealth.activity_and_fitness.readonly",
-    "https://www.googleapis.com/auth/googlehealth.sleep.readonly",
-    "https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.readonly",
     "https://www.googleapis.com/auth/googlehealth.profile.readonly",
 ]
 

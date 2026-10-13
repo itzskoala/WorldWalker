@@ -1,28 +1,97 @@
 // Port of web/templates/index.html's #app-shell + web/static/js/nav.js -
-// the topbar, the three tab screens (all three stay mounted, only
-// visibility toggles, so switching tabs never loses in-progress state
-// like a half-filled search form - same as the vanilla version), and the
-// Trip Detail overlay, which replaces all of that (not toggled via
-// `hidden`, genuinely swapped in) exactly like trip.js's
+// the topbar, the sidebar, the four nav screens (all four stay mounted,
+// only visibility toggles, so switching screens never loses in-progress
+// state like a half-filled search form - same as the vanilla version),
+// and the Trip Detail overlay, which replaces all of that (not toggled
+// via `hidden`, genuinely swapped in) exactly like trip.js's
 // enterTripView()/hide() did.
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Topbar } from './components/Topbar'
-import { TabBar, type ScreenName } from './components/TabBar'
+import { Sidebar, type ScreenName } from './components/Sidebar'
 import { EmailAlertsPanel } from './components/EmailAlertsPanel'
 import { HomePage } from './pages/HomePage'
 import { CreatePage } from './pages/CreatePage'
 import { ProfilePage } from './pages/ProfilePage'
+import { PostcardsPage } from './pages/PostcardsPage'
+import { SettingsPage } from './pages/SettingsPage'
+import { ConnectionsPage } from './pages/ConnectionsPage'
 import { TripDetailPage } from './pages/TripDetailPage'
 import { startJourney } from './api/tripApi'
-import type { TripSession } from './types/trip'
+import { useGoogleHealthConnection } from './hooks/useGoogleHealthConnection'
+import type { ResolvedPlace, TripSession } from './types/trip'
 
 let nextSessionId = 1
+
+// Persists which trip is on screen (nothing else - no fetched state) so a
+// page reload restores it instead of dropping back to the dashboard. The
+// trip itself is re-fetched on restore via TripDetailPage.tsx's existing
+// "open an existing trip by id" path (session.initialState absent,
+// session.tripId present) - the same path HomePage's own onOpenTrip
+// already uses, nothing new there.
+const SESSION_STORAGE_KEY = 'ww-active-trip-session'
+
+interface StoredTripSession {
+  tripId: string
+  fromPlace: string
+  toPlace: string
+}
+
+function readStoredSession(): StoredTripSession | null {
+  try {
+    const raw = localStorage.getItem(SESSION_STORAGE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as Partial<StoredTripSession>
+    if (typeof parsed.tripId !== 'string') return null
+    return { tripId: parsed.tripId, fromPlace: parsed.fromPlace ?? '', toPlace: parsed.toPlace ?? '' }
+  } catch {
+    return null
+  }
+}
+
+function writeStoredSession(session: StoredTripSession | null) {
+  try {
+    if (session) localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session))
+    else localStorage.removeItem(SESSION_STORAGE_KEY)
+  } catch {
+    // Private window / blocked storage - worst case, a reload drops back
+    // to the dashboard the way it always has, nothing crashes over it.
+  }
+}
 
 export function AppShell() {
   const [screen, setScreen] = useState<ScreenName>('home')
   const [emailAlertsOpen, setEmailAlertsOpen] = useState(false)
-  const [tripSession, setTripSession] = useState<TripSession | null>(null)
+  // One instance, shared by Topbar's status pill and Sidebar's connection
+  // button - see the hook's own docstring on why this isn't fetched
+  // twice.
+  const connection = useGoogleHealthConnection()
+  // Lazily seeded from localStorage: a trip session with a real tripId but
+  // no initialState, same shape HomePage's onOpenTrip puts together -
+  // TripDetailPage.tsx fetches the rest itself, same as opening any other
+  // existing trip.
+  const [tripSession, setTripSession] = useState<TripSession | null>(() => {
+    const stored = readStoredSession()
+    if (!stored) return null
+    return { sessionId: nextSessionId++, tripId: stored.tripId, fromPlace: stored.fromPlace, toPlace: stored.toPlace, status: 'loading' }
+  })
+
+  // Keeps localStorage in sync with whatever's actually on screen.
+  // Deliberately does nothing while tripSession.tripId is still null
+  // (startWalking() below, waiting on POST /api/journey/start) - there's
+  // no id yet to resume from, so a reload during that narrow window still
+  // falls back to the dashboard (the in-flight request isn't resumable
+  // either way); once it resolves, this effect runs again with a real id
+  // and persists it then.
+  useEffect(() => {
+    if (!tripSession) {
+      writeStoredSession(null)
+      return
+    }
+    if (tripSession.tripId) {
+      writeStoredSession({ tripId: tripSession.tripId, fromPlace: tripSession.fromPlace, toPlace: tripSession.toPlace })
+    }
+  }, [tripSession])
 
   function updateSession(patch: Partial<TripSession>) {
     setTripSession((prev) => (prev ? { ...prev, ...patch } : prev))
@@ -47,11 +116,19 @@ export function AppShell() {
   // overlay TripDetailPage already has for opening an existing trip now
   // covers this wait too, and the map fills in on its own the moment the
   // response lands - no reload needed.
-  function startWalking(fromPlace: string, toPlace: string, roundTrip: boolean) {
+  function startWalking(from: ResolvedPlace, to: ResolvedPlace, roundTrip: boolean) {
     const sessionId = nextSessionId++
-    setTripSession({ sessionId, tripId: null, fromPlace, toPlace, status: 'loading' })
+    setTripSession({ sessionId, tripId: null, fromPlace: from.label, toPlace: to.label, status: 'loading' })
 
-    startJourney({ from_place: fromPlace, to_place: toPlace, round_trip: roundTrip })
+    startJourney({
+      from_place: from.label,
+      to_place: to.label,
+      round_trip: roundTrip,
+      from_lat: from.lat,
+      from_lng: from.lng,
+      to_lat: to.lat,
+      to_lng: to.lng,
+    })
       .then((result) => {
         setTripSession((prev) => {
           // The user may have already exited back out (or started a
@@ -87,21 +164,36 @@ export function AppShell() {
 
   return (
     <div className="app">
-      <Topbar onOpenEmailAlerts={() => setEmailAlertsOpen(true)} />
+      <Topbar connection={connection} onOpenProfile={() => setScreen('profile')} />
 
-      <div className="screens">
-        <div hidden={screen !== 'home'}>
-          <HomePage active={screen === 'home'} onOpenTrip={(tripId) => setTripSession({ sessionId: nextSessionId++, tripId, fromPlace: '', toPlace: '', status: 'loading' })} />
-        </div>
-        <div hidden={screen !== 'create'}>
-          <CreatePage onStartWalking={startWalking} />
-        </div>
-        <div hidden={screen !== 'profile'}>
-          <ProfilePage active={screen === 'profile'} />
+      <div className="app-body">
+        <Sidebar active={screen} onChange={setScreen} />
+
+        <div className="screens">
+          <div hidden={screen !== 'home'}>
+            <HomePage
+              active={screen === 'home'}
+              onOpenTrip={(tripId) => setTripSession({ sessionId: nextSessionId++, tripId, fromPlace: '', toPlace: '', status: 'loading' })}
+              onExplore={() => setScreen('create')}
+            />
+          </div>
+          <div hidden={screen !== 'create'}>
+            <CreatePage onStartWalking={startWalking} />
+          </div>
+          <div hidden={screen !== 'postcards'}>
+            <PostcardsPage />
+          </div>
+          <div hidden={screen !== 'profile'}>
+            <ProfilePage active={screen === 'profile'} />
+          </div>
+          <div hidden={screen !== 'connections'}>
+            <ConnectionsPage connection={connection} />
+          </div>
+          <div hidden={screen !== 'settings'}>
+            <SettingsPage onOpenEmailAlerts={() => setEmailAlertsOpen(true)} />
+          </div>
         </div>
       </div>
-
-      <TabBar active={screen} onChange={setScreen} />
 
       <EmailAlertsPanel open={emailAlertsOpen} onClose={() => setEmailAlertsOpen(false)} />
     </div>

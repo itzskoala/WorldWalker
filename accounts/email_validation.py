@@ -7,11 +7,10 @@
 # or API key required.
 #
 # Used two places: GET /auth/validate-email (accounts/router.py) is what
-# frontend/src/pages/AuthPage.tsx calls in real time as someone types/
-# blurs the signup form's email field, and accounts/service.py's
-# start_email_signup() re-runs the exact same check server-side before a
-# code is ever sent - the client-side pass is a UX nicety, never trusted
-# on its own.
+# frontend/src/pages/SignupPage.tsx calls in real time as someone types/
+# blurs the signup form's email field, and accounts/service.py's signup()
+# re-runs the exact same check server-side before an account is ever
+# created - the client-side pass is a UX nicety, never trusted on its own.
 
 import re
 

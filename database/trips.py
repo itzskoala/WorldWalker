@@ -18,14 +18,20 @@
 # larger transaction a caller needs to control.
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy import or_, select, update
+from sqlalchemy.orm import Session, selectinload
 
 from database.models import ActiveTrip, TripCheckpoint
-from travel_logic.checkpoints import Checkpoint
+from travel_logic.checkpoints import Checkpoint, generate_checkpoint_positions, generate_reveal_radius_m
 from travel_logic.route_service import Route
+
+# A claimed-but-unfinished metadata job older than this is presumed dead
+# (its worker thread crashed, or the process restarted mid-job) - see
+# claim_checkpoint_for_metadata() - rather than left "processing" forever
+# with nothing left to ever retry it.
+METADATA_CLAIM_STALE_AFTER = timedelta(minutes=2)
 
 IN_PROGRESS_STATUSES = ("active", "paused")
 FINISHED_STATUSES = ("completed", "abandoned")
@@ -37,15 +43,34 @@ def create_trip(
     from_place: str,
     to_place: str,
     route: Route,
-    checkpoints: list[Checkpoint],
     gender: str | None,
     stride_length_m: float | None,
     stride_by_type: dict[str, float],
     round_trip: bool,
+    checkpoints: list[Checkpoint] | None = None,
+    checkpoint_reveal_radius_m: float | None = None,
 ) -> ActiveTrip:
     """Starts a brand new trip for this user, alongside any other trips
     they already have running - multiple concurrent trips are the normal
-    case now, not an edge case to guard against."""
+    case now, not an edge case to guard against.
+
+    checkpoints: every checkpoint's position for the route, generated up
+    front (travel_logic/checkpoints.py's generate_checkpoint_positions())
+    when not given - the normal path (core/facade.py's start_journey()
+    never passes this). An explicit list - including [] - is honored
+    as-is instead, which is what tests use to seed known checkpoints, or
+    deliberately none.
+
+    checkpoint_reveal_radius_m: this trip's randomized proximity-reveal
+    distance, generated (travel_logic/checkpoints.py's
+    generate_reveal_radius_m()) when not given - see
+    TripCheckpoint.revealed_at and ActiveTrip.checkpoint_reveal_radius_m's
+    own docstrings for what this governs."""
+    if checkpoints is None:
+        checkpoints = generate_checkpoint_positions(route)
+    if checkpoint_reveal_radius_m is None:
+        checkpoint_reveal_radius_m = generate_reveal_radius_m()
+
     start_point = route.points[0]
     end_point = route.points[-1]
 
@@ -58,7 +83,20 @@ def create_trip(
         start_lng=start_point.coords.lng,
         end_lat=end_point.coords.lat,
         end_lng=end_point.coords.lng,
-        route_geometry=[{"lat": point.coords.lat, "lng": point.coords.lng} for point in route.points],
+        # "d": point.distance_from_start, alongside lat/lng - route.points
+        # already carries each point's exact, haversine-measured distance
+        # from the start (built once, here, from the real OSRM response -
+        # see travel_logic/route_service.py's build_route()). Persisting
+        # it means core/facade.py's _route_from_geometry() can rebuild
+        # this same Route later (every /api/journey/state read, every
+        # 20s poll while a trip is open) without re-measuring every
+        # adjacent pair's distance via haversine all over again - see
+        # that function's own docstring for why that recompute was a
+        # real, measured bottleneck for a long route's geometry.
+        route_geometry=[
+            {"lat": point.coords.lat, "lng": point.coords.lng, "d": point.distance_from_start}
+            for point in route.points
+        ],
         total_distance_m=route.total_distance,
         meters_walked=0.0,
         stride_length_m=stride_length_m,
@@ -67,6 +105,7 @@ def create_trip(
         workout_intervals=[],
         milestones_notified=[],
         round_trip=round_trip,
+        checkpoint_reveal_radius_m=checkpoint_reveal_radius_m,
         started_at=datetime.now(timezone.utc),
     )
     session.add(trip)
@@ -82,12 +121,15 @@ def create_trip(
                 lng=checkpoint.coordinates.lng,
                 distance_from_start_m=checkpoint.distance_from_start_m,
                 description=checkpoint.description,
-                # This whole-list-at-once path (checkpoints already fully
-                # described, e.g. seed_trip in tests) has no "still
-                # generating" window - only generate_checkpoints_for_trip's
-                # one-at-a-time add_checkpoint()/set_checkpoint_description()
-                # below actually uses "pending".
-                description_status="ready",
+                # A checkpoint handed in with a real name already (tests
+                # seeding a ready-made list) has no metadata left to
+                # resolve - "ready" immediately. The normal path (a blank-
+                # name position straight from generate_checkpoint_positions())
+                # starts "pending" instead, same as always, so core/
+                # facade.py's checkpoint-metadata pipeline knows there's
+                # real work to do for it.
+                metadata_status="ready" if checkpoint.name else "pending",
+                revealed_at=None,
                 hit_at=None,
             )
         )
@@ -105,57 +147,97 @@ def get_trip(session: Session, trip_id: uuid.UUID, user_id: uuid.UUID) -> Active
 
 
 def get_trip_by_id(session: Session, trip_id: uuid.UUID) -> ActiveTrip | None:
-    """Unscoped by user - only for the background checkpoint-generation
-    job (core/facade.py's generate_checkpoints_for_trip()), which runs
-    with a trip_id it just minted itself (from start_journey(), in the
-    same request), never one a client supplied. Every user-facing path
-    still goes through get_trip() above."""
+    """Unscoped by user - only for the background checkpoint-metadata job
+    (core/facade.py's bootstrap_checkpoint_metadata()), which runs with a
+    trip_id it just minted itself (from start_journey(), in the same
+    request), never one a client supplied. Every user-facing path still
+    goes through get_trip() above."""
     return session.get(ActiveTrip, trip_id)
 
 
-def add_checkpoint(session: Session, trip_id: uuid.UUID, checkpoint: Checkpoint) -> TripCheckpoint:
-    """Persists one checkpoint the moment its location is known - before
-    its AI description exists yet (description_status starts "pending" so
-    the map can show its pin right away) - see generate_checkpoints_for_
-    trip()'s progressive discovery."""
-    row = TripCheckpoint(
-        trip_id=trip_id,
-        checkpoint_number=checkpoint.checkpoint_number,
-        name=checkpoint.name,
-        lat=checkpoint.coordinates.lat,
-        lng=checkpoint.coordinates.lng,
-        distance_from_start_m=checkpoint.distance_from_start_m,
-        description="",
-        description_status="pending",
-        hit_at=None,
+def claim_checkpoint_for_metadata(session: Session, checkpoint_id: uuid.UUID) -> bool:
+    """Atomically flips one checkpoint from "pending" (or a "processing"
+    claim old enough to be presumed dead - see METADATA_CLAIM_STALE_AFTER)
+    to "processing", and reports whether *this* call is the one that won
+    the claim. Core/facade.py's checkpoint-metadata pipeline calls this
+    before ever submitting a checkpoint to its background thread pool -
+    the initial-batch bootstrap and a proximity-triggered lookahead can
+    both try to claim the same checkpoint at once (or a page reload can
+    re-trigger a bootstrap for a checkpoint already being worked on), and
+    this single UPDATE-with-a-WHERE is what guarantees only one of them
+    ever actually processes it.
+
+    A single UPDATE statement, not a read-then-write - the WHERE clause
+    itself is the race-proof part; two concurrent calls can't both match
+    the same row."""
+    stale_cutoff = datetime.now(timezone.utc) - METADATA_CLAIM_STALE_AFTER
+    result = session.execute(
+        update(TripCheckpoint)
+        .where(
+            TripCheckpoint.id == checkpoint_id,
+            or_(
+                TripCheckpoint.metadata_status == "pending",
+                (TripCheckpoint.metadata_status == "processing") & (TripCheckpoint.metadata_requested_at < stale_cutoff),
+            ),
+        )
+        .values(metadata_status="processing", metadata_requested_at=datetime.now(timezone.utc))
     )
-    session.add(row)
     session.commit()
-    session.refresh(row)
-    return row
+    return result.rowcount == 1
 
 
-def set_checkpoint_description(session: Session, checkpoint_id: uuid.UUID, description: str) -> TripCheckpoint | None:
-    """Fills in a checkpoint's AI description once it's ready (real or the
-    plain fallback line - either way there's real text now) and flips it
-    out of "pending". None if the checkpoint (or its trip) was deleted out
-    from under a still-running background job."""
+def release_checkpoint_metadata_claim(session: Session, checkpoint_id: uuid.UUID) -> None:
+    """Puts a checkpoint back to "pending" after a failed resolution
+    attempt (a Nominatim/AI call that raised), so the next bootstrap or
+    proximity-triggered lookahead call retries it instead of leaving it
+    stuck "processing" forever. No-op if the checkpoint's already
+    "ready" (a stale duplicate failure callback arriving after a retry
+    already succeeded) or gone."""
+    row = session.get(TripCheckpoint, checkpoint_id)
+    if row is None or row.metadata_status == "ready":
+        return
+    row.metadata_status = "pending"
+    row.metadata_requested_at = None
+    session.commit()
+
+
+def set_checkpoint_metadata(session: Session, checkpoint_id: uuid.UUID, name: str, description: str) -> TripCheckpoint | None:
+    """Fills in a checkpoint's real name and AI description once both are
+    known and flips it to "ready". None if the checkpoint (or its trip)
+    was deleted out from under a still-running background job."""
     row = session.get(TripCheckpoint, checkpoint_id)
     if row is None:
         return None
+    row.name = name
     row.description = description
-    row.description_status = "ready"
+    row.metadata_status = "ready"
     session.commit()
     return row
 
 
-def mark_checkpoints_ready(session: Session, trip: ActiveTrip) -> None:
-    """The background checkpoint-generation job has found every checkpoint
-    along this trip's route - GET /api/journey/{id}/events (app.py) reads
-    this to know a freshly-connecting client won't see any more
-    checkpoint_added/checkpoint_updated events for this trip."""
-    trip.checkpoints_ready_at = datetime.now(timezone.utc)
-    session.commit()
+def mark_checkpoints_revealed(session: Session, trip: ActiveTrip, distance_walked_m: float) -> list[TripCheckpoint]:
+    """Sets revealed_at on every checkpoint now within this trip's own
+    randomized reveal radius (checkpoint_reveal_radius_m) that wasn't
+    already revealed, and returns just those newly-revealed checkpoints -
+    same "set once, never cleared" shape as mark_checkpoints_hit() below,
+    and deliberately independent of it: a checkpoint reveals itself a
+    little before the walker actually reaches it (that's the whole point
+    of the radius), and a checkpoint already passed is trivially "within
+    radius" too (distance_from_start_m - distance_walked_m goes
+    negative, which is <= any positive radius) - so hit checkpoints are
+    always revealed, never the other way around."""
+    newly_revealed = []
+    for checkpoint in trip.checkpoints:
+        already_revealed = checkpoint.revealed_at is not None
+        within_radius = checkpoint.distance_from_start_m - distance_walked_m <= trip.checkpoint_reveal_radius_m
+        if within_radius and not already_revealed:
+            checkpoint.revealed_at = datetime.now(timezone.utc)
+            newly_revealed.append(checkpoint)
+
+    if newly_revealed:
+        session.commit()
+
+    return newly_revealed
 
 
 def get_active_trips(session: Session, user_id: uuid.UUID) -> list[ActiveTrip]:
@@ -172,8 +254,22 @@ def get_active_trips(session: Session, user_id: uuid.UUID) -> list[ActiveTrip]:
 
 def list_trips(session: Session, user_id: uuid.UUID) -> list[ActiveTrip]:
     """Every trip belonging to this user, in progress or not - the source
-    for the "active" / "past" split in the trips list UI."""
-    statement = select(ActiveTrip).where(ActiveTrip.user_id == user_id).order_by(ActiveTrip.started_at.desc())
+    for the "active" / "past" split in the trips list UI.
+
+    selectinload(checkpoints): the trips list UI shows each active trip's
+    most-recently-reached checkpoint (core/facade.py's _trip_summary()),
+    which needs trip.checkpoints. Without this, accessing that relation
+    on each returned trip would lazy-load it with its own separate query
+    per trip - one extra round trip per active trip, on top of the one
+    this function already makes. selectinload issues exactly one extra
+    query total (checkpoints for every trip id returned here), not one
+    per trip, regardless of how many trips a user has."""
+    statement = (
+        select(ActiveTrip)
+        .where(ActiveTrip.user_id == user_id)
+        .options(selectinload(ActiveTrip.checkpoints))
+        .order_by(ActiveTrip.started_at.desc())
+    )
     return list(session.execute(statement).scalars())
 
 

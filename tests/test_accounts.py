@@ -168,7 +168,7 @@ def test_signup_rejects_an_invalid_email(patched_session, client):
 #
 #
 # def test_signup_start_again_replaces_the_earlier_code(patched_session, client, skip_mx_lookup, sent_codes):
-#     """"Resend code" (frontend/src/pages/AuthPage.tsx) is just another /start
+#     """"Resend code" (frontend/src/pages/SignupPage.tsx) is just another /start
 #     call for the same email - the old code should stop working once a
 #     new one's been issued."""
 #     old_code = _start_signup(client, sent_codes)
@@ -450,3 +450,60 @@ def test_logout_clears_the_refresh_cookie(patched_session, client):
 
     assert response.status_code == 200
     assert "refresh_token" not in response.cookies
+
+
+# --- existing accounts (regression coverage for the Clerk revert) ---
+# These lock in Step 4's data-preservation requirements: an account that
+# already has a hashed_password (every production user does - see the
+# migration audit) must log in as itself, not get duplicated or re-keyed,
+# and anything foreign-keyed to its user.id (trips, Google Health
+# connections) must stay attached to the exact same row.
+
+def test_existing_user_with_a_password_hash_logs_in_without_creating_a_duplicate(patched_session, client):
+    """Simulates a real pre-Clerk production row: created directly (not
+    through signup()) with a real bcrypt hash already on it, the same
+    shape every existing account has."""
+    existing = User(email="returning@example.com", hashed_password=security.hash_password("correct-horse"))
+    patched_session.add(existing)
+    patched_session.commit()
+
+    response = client.post("/auth/login", json={"email": "returning@example.com", "password": "correct-horse"})
+
+    assert response.status_code == 200
+    assert patched_session.query(User).count() == 1
+
+
+def test_existing_users_trips_and_google_health_connection_stay_attached_after_login(
+    patched_session, client, connected_user_id, seed_trip
+):
+    """connected_user_id (tests/conftest.py) is a bare User with a real
+    GoogleHealthConnection already on it - gives it a password, logs in,
+    and confirms /auth/me resolves back to that exact row, with the
+    connection and a seeded trip both still foreign-keyed to it."""
+    from travel_logic.route_service import Route, RoutePoint
+    from travel_logic.coordinates import Coordinates
+
+    user = patched_session.get(User, connected_user_id)
+    user.email = "connected@example.com"
+    user.hashed_password = security.hash_password("correct-horse")
+    patched_session.commit()
+
+    route = Route(
+        points=[
+            RoutePoint(Coordinates(0.0, 0.0), 1, 0.0, 1000.0, 0.0, 1000.0),
+            RoutePoint(Coordinates(0.0, 0.01), 2, 1000.0, 0.0, 1000.0, 0.0),
+        ],
+        total_distance=1000.0,
+        point_count=2,
+    )
+    seed_trip(connected_user_id, route)
+
+    login = client.post("/auth/login", json={"email": "connected@example.com", "password": "correct-horse"})
+    assert login.status_code == 200
+
+    me = client.get("/auth/me", headers={"Authorization": f"Bearer {login.json()['access_token']}"})
+    assert me.json()["id"] == str(connected_user_id)
+
+    patched_session.refresh(user)
+    assert user.google_health_connection is not None
+    assert len(user.trips) == 1

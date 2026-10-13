@@ -17,22 +17,21 @@ from database.session import SessionLocal
 from services.google_health.client import get_data_points
 from services.fitbitMetrics.fitbit_steps import StepsMetric
 from services.fitbitMetrics.fitbit_exercise import ExerciseMetric
-from services.fitbitMetrics.fitbit_sleep import SleepMetric
-from services.fitbitMetrics.fitbit_heart_rate import HeartRateMetric
 
 load_dotenv()
 
 WEBHOOK_SECRET = os.environ["WEBHOOK_SECRET"]
-BACKFILL_DATA_TYPES = ("steps", "exercise", "sleep", "heart-rate")
+# Not sleep/heart-rate: WorldWalker doesn't request those scopes (see
+# auth/google_health_auth.py's SCOPES) since nothing uses that data yet.
+BACKFILL_DATA_TYPES = ("steps", "exercise")
 
 router = APIRouter()
 
 
 def process_health_data(data_type: str, point: dict, user_id: uuid.UUID) -> None:
     """One real data point (already pulled) -> the matching strategy ->
-    a typed object. Steps/exercise drive real travel progress (the
-    database TravelFacade owns); sleep/heart-rate are printed structured -
-    no persistence yet, nothing reads them back."""
+    a typed object -> real travel progress (the database TravelFacade
+    owns)."""
     match data_type:
         case "steps":
             obj = StepsMetric(point).metric_obj()
@@ -49,14 +48,6 @@ def process_health_data(data_type: str, point: dict, user_id: uuid.UUID) -> None
                 travel_facade.record_workout(user_id, obj)
             except ValueError as e:
                 print(f"❌ {e}")
-
-        case "sleep":
-            obj = SleepMetric(point).metric_obj()
-            print(f"🛌 Sleep logged: {obj.summary.minutes_asleep} minutes asleep")
-
-        case "heart-rate":
-            obj = HeartRateMetric(point).metric_obj()
-            print(f"❤️ Heart Rate Pulse: {obj.bpm} BPM")
 
         case _:
             print(f"❌ Unknown or unhandled dataType: {data_type}")

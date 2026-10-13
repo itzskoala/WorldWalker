@@ -1,12 +1,12 @@
 # tests/test_index_route.py
-# /, /login, /signup, and GET /api/config - the frontend (frontend/,
-# built to frontend/dist/) has no server-side templating any more, so
-# these routes carry no per-request/per-user state at all: every page
-# route serves the exact same static SPA shell, and react-router
-# (frontend/src/App.tsx) decides what to render client-side. The one
-# genuinely dynamic bit that used to be baked into server-rendered HTML -
-# the Google Sign-In client ID - now lives at GET /api/config instead
-# (frontend/src/components/GoogleSignInButton.tsx fetches it once).
+# /, /login, and /signup - the frontend (frontend/, built to
+# frontend/dist/) has no server-side templating any more, so these page
+# routes carry no per-request/per-user state at all: every one serves the
+# exact same static SPA shell, and react-router (frontend/src/App.tsx)
+# decides what to render client-side - including which of these three
+# screens that shell shows. The real auth state/logic lives server-side
+# (accounts/router.py's /auth/* routes - see tests/test_accounts.py),
+# just not reachable from a plain GET / here.
 
 from fastapi.testclient import TestClient
 
@@ -65,26 +65,3 @@ def test_unmatched_api_path_still_404s_instead_of_getting_the_spa_shell():
     # see app.py's API_PREFIXES check.
     response = client.get("/api/this-route-does-not-exist")
     assert response.status_code == 404
-
-
-# --- GET /api/config: the one piece of real (if non-secret) server state
-# a page route used to carry directly - accounts/router.py's Google
-# OAuth is unaffected either way.
-
-def test_public_config_carries_the_configured_google_client_id(monkeypatch):
-    monkeypatch.setenv("GOOGLE_SIGNIN_CLIENT_ID", "test-client-id-123")
-    monkeypatch.delenv("APPLE_SIGNIN_CLIENT_ID", raising=False)
-
-    response = client.get("/api/config")
-
-    assert response.status_code == 200
-    assert response.json() == {"google_client_id": "test-client-id-123", "apple_client_id": ""}
-
-
-def test_public_config_is_empty_when_unconfigured(monkeypatch):
-    monkeypatch.delenv("GOOGLE_SIGNIN_CLIENT_ID", raising=False)
-    monkeypatch.delenv("APPLE_SIGNIN_CLIENT_ID", raising=False)
-
-    response = client.get("/api/config")
-
-    assert response.json() == {"google_client_id": "", "apple_client_id": ""}

@@ -11,6 +11,7 @@ import { useTripMap } from '../hooks/useTripMap'
 import { getJourneyState, pauseJourney, resumeJourney, subscribeToTripCheckpoints } from '../api/tripApi'
 import type { TripCheckpointEvent } from '../api/tripApi'
 import type { TripMapState, TripSession } from '../types/trip'
+import { IconClock, IconFlag, IconRoute } from '../components/icons'
 
 const POLL_INTERVAL_MS = 20000
 const METERS_PER_MILE = 1609.344
@@ -58,14 +59,12 @@ export function TripDetailPage({ session, onExit, onExitToProfile, onSessionUpda
   const unit = readSavedUnit()
 
   const [state, setState] = useState<TripMapState | null>(session.initialState ?? null)
-  const [mapReady, setMapReady] = useState(false)
   const [mapError, setMapError] = useState<string | null>(null)
   const stateRef = useRef<TripMapState | null>(state)
   stateRef.current = state
 
   const { controllerRef, remount } = useTripMap({
     containerId: 'trip-map',
-    onReady: () => setMapReady(true),
     onError: () => setMapError('This map is taking too long to load. Tap to try again.'),
   })
 
@@ -103,15 +102,17 @@ export function TripDetailPage({ session, onExit, onExitToProfile, onSessionUpda
     if (session.initialState) setState(session.initialState)
   }, [session.initialState])
 
-  // Progressive checkpoints: as soon as a trip_id exists and its
-  // checkpoints aren't already fully generated (a brand-new walk always
-  // starts checkpoints_ready: false - core/facade.py's start_journey()),
-  // listen for checkpoint_added/checkpoint_updated/checkpoints_ready over
-  // GET /api/journey/{trip_id}/events instead of waiting for the next
-  // 20s poll below. Reads/writes stateRef.current rather than closing
-  // over `state` so this effect only needs to re-run when trip_id or
-  // checkpoints_ready actually change, not on every unrelated state
-  // update (a pause, a poll tick, ...).
+  // Progressive checkpoints: as soon as a trip_id exists and the trip
+  // itself isn't already finished (checkpoints_ready now means "trip
+  // completed," not "checkpoint discovery finished" - core/facade.py's
+  // checkpoint-metadata pipeline resolves/reveals checkpoints lazily,
+  // for an active trip's whole duration, not just early on), listen for
+  // checkpoint_updated/checkpoints_ready over GET /api/journey/
+  // {trip_id}/events instead of waiting for the next 20s poll below.
+  // Reads/writes stateRef.current rather than closing over `state` so
+  // this effect only needs to re-run when trip_id or checkpoints_ready
+  // actually change, not on every unrelated state update (a pause, a
+  // poll tick, ...).
   useEffect(() => {
     if (!state || state.checkpoints_ready) return
     const tripId = state.trip_id
@@ -199,40 +200,36 @@ export function TripDetailPage({ session, onExit, onExitToProfile, onSessionUpda
   }
 
   const overlayError = mapError ?? (session.status === 'error' ? session.errorMessage ?? "Couldn't load this trip. Tap to try again." : null)
-  // Covers only the actual map-tile load (fast) and real errors - NOT
-  // the wait for a brand-new walk's route (session.tripId starts null,
-  // set only once /api/journey/start resolves - AppShell.tsx's
-  // startWalking()), which can take the better part of a minute. Rather
-  // than block the screen behind a spinner for that whole stretch, the
-  // base map is left visible and loading/rendering underneath (the
-  // world view MapLibre boots into) the moment tiles are ready; the
-  // still-planning state below shows inline in the route card instead,
-  // and drawInitial() zooms into the real route the instant it lands.
-  const showLoadingOverlay = !mapReady || overlayError
-  const avatarInitial = user?.email ? user.email[0].toUpperCase() : 'W'
+  // This overlay exists ONLY for a genuine failure now (map stalled/
+  // errored, or the trip itself failed to load) - it never gates normal
+  // loading. The map container/canvas is visible the instant this page
+  // mounts; tripMap.ts's mount() paints the default view immediately,
+  // setStartHint() (called from renderInitial() the moment route data
+  // exists) snaps the camera to the real starting area well before the
+  // style/tiles finish, and drawInitial() draws the route as soon as the
+  // style itself is ready (MapLibre's 'style.load', not the slower 'load'
+  // that waits on every tile) - see tripMap.ts for all three. Tiles keep
+  // filling in underneath on their own; nothing here waits on them.
+  const showLoadingOverlay = !!overlayError
+  const avatarEmail = user?.email
+  const avatarInitial = avatarEmail ? avatarEmail[0].toUpperCase() : 'W'
 
   const from = state?.from_place ?? session.fromPlace
   const to = state?.to_place ?? session.toPlace
   const pct = state ? Math.min(100, state.percent_complete) : 0
   const isPaused = state?.status === 'paused'
-  const hitCount = state?.checkpoints.filter((c) => c.hit).length ?? 0
-  const daysLeft = state?.estimated_days_remaining
-  const showDaysLeft = !!state && state.status !== 'completed' && daysLeft !== null && daysLeft !== undefined && Number.isFinite(daysLeft)
+  const remainingM = state ? Math.max(0, state.total_distance_m - state.distance_walked_m) : 0
 
   return (
     <section className="trip-view" aria-label="Your walk">
       <div className="trip-map-full" id="trip-map" />
 
-      <div className={`trip-map-loading${overlayError ? ' is-error' : ''}`} hidden={!showLoadingOverlay} onClick={overlayError ? retryMapLoad : undefined}>
-        {overlayError ? (
-          <svg className="trip-map-loading-error-icon" viewBox="0 0 24 24" fill="none">
-            <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.8" />
-            <path d="M12 8v5M12 16h.01" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-          </svg>
-        ) : (
-          <span className="spinner" aria-hidden="true" />
-        )}
-        <p>{overlayError ?? (!session.tripId && !state ? 'Planning your route — this can take a minute…' : 'Loading your walk…')}</p>
+      <div className="trip-map-loading is-error" hidden={!showLoadingOverlay} onClick={retryMapLoad}>
+        <svg className="trip-map-loading-error-icon" viewBox="0 0 24 24" fill="none">
+          <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.8" />
+          <path d="M12 8v5M12 16h.01" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+        </svg>
+        <p>{overlayError}</p>
       </div>
 
       <div className="trip-overlay-top">
@@ -244,33 +241,34 @@ export function TripDetailPage({ session, onExit, onExitToProfile, onSessionUpda
             </svg>
           </button>
 
-          <div className="trip-route-card">
-            <div className="trip-route-card-top">
-              <h2 className="trip-route-card-title">
-                <span>{from || '—'}</span>
-                <svg className="icon icon-sm" viewBox="0 0 24 24" fill="none">
-                  <path d="M5 12h14m0 0-5-5m5 5-5 5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-                <span>{to || '—'}</span>
-              </h2>
+          <div className="trip-route-stack">
+            <div className="trip-route-pills">
+              <div className="trip-route-pill">
+                <span className="trip-route-pill-dot trip-route-pill-dot--start" aria-hidden="true" />
+                <span className="trip-route-pill-text">{from || '—'}</span>
+              </div>
+              <div className="trip-route-pill">
+                <span className="trip-route-pill-dot trip-route-pill-dot--end" aria-hidden="true" />
+                <span className="trip-route-pill-text">{to || '—'}</span>
+              </div>
               <span className="trip-status-badge" hidden={!isPaused}>
                 Paused
               </span>
             </div>
-            <div className="trip-route-card-progress-row">
+            <div className="trip-route-progress">
               {state ? (
                 <>
-                  <span className="trip-card-progress trip-route-card-progress-bar">
+                  <span className="trip-card-progress trip-route-progress-bar">
                     <span className="trip-card-progress-fill" style={{ width: `${pct.toFixed(0)}%` }} />
                   </span>
-                  <span className="trip-route-card-pct">{pct.toFixed(0)}%</span>
+                  <span className="trip-route-progress-pct">{pct.toFixed(0)}%</span>
                 </>
               ) : (
                 // The route itself (real geocoding/routing server-side)
                 // is still in flight - a 0%-filled progress bar here
                 // would look identical to a real just-started walk, so
                 // this stands in for it instead of the bar.
-                <span className="trip-route-card-planning">
+                <span className="trip-route-progress-planning">
                   <span className="spinner spinner-sm" aria-hidden="true" />
                   Planning your route…
                 </span>
@@ -301,42 +299,56 @@ export function TripDetailPage({ session, onExit, onExitToProfile, onSessionUpda
 
           {state && (
             <>
-              <div className="trip-pill-chip">
-                <span className="trip-pill-emoji" aria-hidden="true">
-                  👣
-                </span>
-                <span>{state.total_steps.toLocaleString()}</span>
-              </div>
-              <div className="trip-pill-chip">
-                <span className="trip-pill-emoji" aria-hidden="true">
-                  ⏱️
-                </span>
-                <span>{formatDuration(state.elapsed_seconds)}</span>
-              </div>
-              <div className="trip-pill-chip">
-                <span className="trip-pill-emoji" aria-hidden="true">
-                  🛣️
-                </span>
-                <span>
-                  {formatDistance(state.distance_walked_m, unit)} / {formatDistance(state.total_distance_m, unit)}
+              <div className="trip-stat-pill">
+                <span className="trip-stat-pill-label">Distance Covered</span>
+                <span className="trip-stat-pill-value">
+                  <IconRoute className="trip-stat-pill-icon" />
+                  {formatDistance(state.distance_walked_m, unit)}
                 </span>
               </div>
-              <div className="trip-pill-chip">
-                <span className="trip-pill-emoji" aria-hidden="true">
-                  🚩
-                </span>
-                <span>
-                  {hitCount} / {state.checkpoints.length}
+              <div className="trip-stat-pill">
+                <span className="trip-stat-pill-label">Distance left</span>
+                <span className="trip-stat-pill-value">
+                  <IconRoute className="trip-stat-pill-icon" />
+                  {formatDistance(remainingM, unit, 0)}
                 </span>
               </div>
-              {showDaysLeft && (
-                <div className="trip-pill-chip">
-                  <span className="trip-pill-emoji" aria-hidden="true">
-                    ⏳
+              <div className="trip-stat-pill">
+                <span className="trip-stat-pill-label">Total Steps</span>
+                <span className="trip-stat-pill-value">
+                  <span className="trip-stat-pill-icon" aria-hidden="true">
+                    👣
                   </span>
-                  <span>{daysLeft! < 1 ? '<1' : Math.ceil(daysLeft!).toString()}</span>
-                </div>
-              )}
+                  {state.total_steps.toLocaleString()}
+                </span>
+              </div>
+              <div className="trip-stat-pill">
+                <span className="trip-stat-pill-label">Today's Steps</span>
+                <span className="trip-stat-pill-value">
+                  <span className="trip-stat-pill-icon" aria-hidden="true">
+                    👣
+                  </span>
+                  {state.today_steps.toLocaleString()}
+                </span>
+              </div>
+              <div className="trip-stat-pill">
+                <span className="trip-stat-pill-label">Time Elapsed</span>
+                <span className="trip-stat-pill-value">
+                  <IconClock className="trip-stat-pill-icon" />
+                  {formatDuration(state.elapsed_seconds)}
+                </span>
+              </div>
+              <div className="trip-stat-pill">
+                <span className="trip-stat-pill-label">Checkpoints</span>
+                <span className="trip-stat-pill-value">
+                  <IconFlag className="trip-stat-pill-icon" />
+                  {/* Discovered (proximity-revealed), not metadata-ready -
+                      a checkpoint can reveal itself well before its name/
+                      description finish resolving. See
+                      TripMapState.discovered_checkpoints. */}
+                  {state.discovered_checkpoints}/{state.total_checkpoints}
+                </span>
+              </div>
             </>
           )}
         </div>

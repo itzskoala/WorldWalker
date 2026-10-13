@@ -29,6 +29,25 @@ from database.session import SessionLocal
 
 
 class TotalDistanceDB:
+    def total_steps_by_trip(self, trip_ids: list[uuid.UUID]) -> dict[uuid.UUID, int]:
+        """total_steps() for every trip in trip_ids, in one grouped query -
+        the trips list UI needs this per active trip (core/facade.py's
+        _trip_summary()), and calling total_steps() once per trip would
+        open a separate SessionLocal/round trip for each one. A trip with
+        no sync rows at all simply has no key here - callers default to 0
+        for those, same as total_steps()'s own coalesce."""
+        if not trip_ids:
+            return {}
+        with SessionLocal() as session:
+            rows = (
+                session.query(StepSyncLog.trip_id, func.sum(StepSyncLog.steps))
+                .filter(StepSyncLog.trip_id.in_(trip_ids))
+                .group_by(StepSyncLog.trip_id)
+                .all()
+            )
+            return {trip_id: total for trip_id, total in rows}
+
+
     def record_sync(
         self,
         user_id: str,

@@ -21,8 +21,8 @@ from database import trips
 from database.models import ActiveTrip, TripCheckpoint
 from database.session import SessionLocal
 from travel_logic.coordinates import Coordinates
-from travel_logic.geocoder import NominatimGeocoder
-from travel_logic.route_service import OSRMWalkingRouteService, Route, build_route
+from travel_logic.geocoder import Place, create_geocoder
+from travel_logic.route_service import OSRMWalkingRouteService, Route, RoutePoint, build_route
 from travel_logic.progress_calculator import (
     Progress,
     resolve_stride_m,
@@ -35,7 +35,7 @@ from travel_logic.progress_calculator import (
     interval_within_any,
     milestones_just_crossed,
 )
-from travel_logic.checkpoints import Checkpoint, generate_checkpoints_progressive, generate_description
+from travel_logic.checkpoints import resolve_checkpoint_name, generate_checkpoint_description
 from travel_logic.description_generator import AIDescriptionGenerator
 from data.total_distance_db import TotalDistanceDB
 from core.observer_decorator.event_manager import EventManager
@@ -49,10 +49,35 @@ load_dotenv()
 
 METERS_PER_MILE = 1609.344
 
+# How many checkpoints (by checkpoint_number, from the start) get their
+# name/description resolved right away, as soon as a trip exists - so the
+# walker's very first view of the map already shows real place names
+# instead of every pin reading blank, without waiting on the *whole*
+# route's worth of Nominatim/AI calls before the trip can even open.
+INITIAL_METADATA_BATCH = 4
+
+# How many checkpoints beyond the furthest currently-revealed one stay
+# pre-resolved at all times - small enough that a long route's checkpoints
+# mostly sit "pending" until the walker is actually near them (the whole
+# point of resolving metadata lazily), large enough that a walker moving
+# at a normal clip never outpaces the background resolution and sees a
+# checkpoint's name still blank right as it reveals.
+METADATA_LOOKAHEAD = 2
+
+# One process-wide, bounded pool for every checkpoint's name/description
+# resolution - shared across every trip and every call site (the initial
+# bootstrap right after a trip is created, and every proximity-triggered
+# lookahead afterward), not one pool per call. Nominatim's own rate limit
+# is still the real bottleneck (travel_logic/geocoder.py's NominatimGeocoder
+# throttles every request from any instance, process-wide, to its own
+# policy) - this pool just bounds how many resolutions can be in flight
+# waiting on that at once.
+_checkpoint_metadata_executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="checkpoint-metadata")
+
 
 class TravelFacade:
     def __init__(self):
-        self._geocoder = NominatimGeocoder()
+        self._geocoder = create_geocoder()
         self._router = OSRMWalkingRouteService()
         self._describer = AIDescriptionGenerator()
         self._db = TotalDistanceDB()
@@ -81,21 +106,43 @@ class TravelFacade:
         gender: str | None = None,
         stride_length_m: float | None = None,
         round_trip: bool = False,
+        from_coords: Coordinates | None = None,
+        to_coords: Coordinates | None = None,
     ) -> dict:
         """Builds the route (network calls - geocoding, OSRM) and persists
-        the trip immediately, with no checkpoints yet - the map/route is
-        the critical path here, and checkpoint discovery is the genuinely
-        slow part (Nominatim's ~1 req/sec policy times up to MAX_SAMPLES
-        reverse lookups, each with its own AI description on top). App.py
-        kicks generate_checkpoints_for_trip() off as a background task
-        right after this returns, so the trip appears on screen - map,
-        route, distance, ETA - in roughly the time two geocodes and one
-        OSRM call take, not however long the full checkpoint pipeline
-        takes. The network work here still happens before any database
-        session is opened, so a slow external call never holds a DB
-        connection idle."""
-        start = self._geocoder.geocode(from_place)
-        end = self._geocoder.geocode(to_place)
+        the trip immediately - every checkpoint's position for the whole
+        route is generated and persisted right along with it
+        (database/trips.py's create_trip(), via travel_logic/checkpoints.py's
+        generate_checkpoint_positions() - pure geometry, no network calls,
+        so it never slows this down), but every checkpoint's name/
+        description starts blank. Resolving those is the genuinely slow,
+        per-checkpoint part (Nominatim's ~1 req/sec policy, plus an AI
+        call each) - app.py kicks bootstrap_checkpoint_metadata() off as a
+        background task right after this returns to resolve just the
+        first few, and the rest resolve lazily as the walker actually
+        approaches them (see _ensure_checkpoint_metadata()). The trip
+        appears on screen - map, route, distance, ETA, every checkpoint's
+        position - in roughly the time two geocodes and one OSRM call
+        take, not however long the full route's worth of metadata
+        resolution would take. The network work here still happens before
+        any database session is opened, so a slow external call never
+        holds a DB connection idle.
+
+        from_coords/to_coords: pass these when the caller already
+        resolved real coordinates for from_place/to_place (the normal
+        case now - CreatePage.tsx's autocomplete always resolves a
+        selection to real lat/lng before Start Walking is even
+        clickable, see app.py's JourneyStartRequest). Geocoding a place
+        the caller already has coordinates for isn't just wasted work -
+        it can genuinely fail for text a real selection produced but
+        Nominatim's plain /search can't parse back (confirmed live: an
+        airport-style or already-shortened label like "Chile Chico
+        Airport (CCH), Chile Chico, CL" 400s as "No match", even though
+        the user picked a real, valid place). geocode() is still the
+        fallback for a caller with only place-name text and no
+        coordinates of its own to offer."""
+        start = from_coords or self._geocoder.geocode(from_place)
+        end = to_coords or self._geocoder.geocode(to_place)
         route = self._router.get_walking_route(start, end)
 
         stride_by_type = _real_stride_by_type(user_id)
@@ -109,80 +156,79 @@ class TravelFacade:
                 from_place=from_place,
                 to_place=to_place,
                 route=route,
-                checkpoints=[],
                 gender=gender,
                 stride_length_m=stride_length_m,
                 stride_by_type=stride_by_type,
                 round_trip=round_trip,
             )
+            # A checkpoint can land within the trip's own reveal radius of
+            # the starting point itself (a short route, or just an
+            # unlucky draw of the radius) - without this, it would only
+            # reveal on the walker's first real progress sync instead of
+            # showing up the instant the map first loads.
+            trips.mark_checkpoints_revealed(session, trip, distance_walked_m=0.0)
             return self._build_map_state(trip)
 
-    def generate_checkpoints_for_trip(self, trip_id: uuid.UUID) -> None:
-        """The slow part of starting a journey, split out of start_journey()
-        above so it can run after the trip (map/route) is already on
-        screen - see app.py's /api/journey/start, which schedules this as
-        a FastAPI BackgroundTask right after start_journey() returns.
-
-        Every checkpoint is persisted (and broadcast, via self.events) the
-        moment its location is known, description="" - before its AI
-        description exists - so the frontend can show its pin right away
-        with a "generating…" marker (TripDetailPage.tsx's SSE subscription
-        to GET /api/journey/{trip_id}/events). Each checkpoint's
-        description generation is then handed to a small thread pool
-        rather than run inline in the (Nominatim-rate-limited) discovery
-        loop, so a slow AI call for checkpoint 2 never delays discovering
-        checkpoint 3 down the route - descriptions arrive out of order,
-        independently, as their own model calls finish.
-
-        Opens its own short-lived sessions throughout (same rule as every
-        other method here) rather than one held for the whole job, since
-        this can run for a while. Wrapped in a broad try/finally: whatever
-        checkpoints were found before an unexpected failure (a real bug,
-        not the already-handled "no city here"/"description API down"
-        cases) still get marked ready rather than leaving a trip stuck
-        "generating" forever - a client's GET /api/journey/{trip_id}/
-        events would otherwise hang indefinitely waiting for a
-        checkpoints_ready that never comes."""
+    def bootstrap_checkpoint_metadata(self, trip_id: uuid.UUID) -> None:
+        """Resolves name/description for just the first INITIAL_METADATA_
+        BATCH checkpoints, split out of start_journey() above so it can
+        run after the trip (map/route, every checkpoint's position) is
+        already on screen - see app.py's /api/journey/start, which
+        schedules this as a FastAPI BackgroundTask right after
+        start_journey() returns. Every checkpoint beyond that batch stays
+        "pending" until the walker actually gets near it - see
+        _notify_progress()'s proximity-triggered lookahead, which is what
+        resolves the rest, one small buffer at a time, for the entire
+        rest of the trip."""
         with SessionLocal() as session:
             trip = trips.get_trip_by_id(session, trip_id)
             if trip is None:
                 return  # deleted (or never existed) - nothing left to do
-            route, _progress = _locate(trip)
+            self._ensure_checkpoint_metadata(session, trip, up_to_checkpoint_number=INITIAL_METADATA_BATCH)
 
-        description_futures = []
+    def _ensure_checkpoint_metadata(self, session: Session, trip: ActiveTrip, up_to_checkpoint_number: int) -> None:
+        """Claims (database/trips.py's claim_checkpoint_for_metadata() -
+        atomic, duplicate-job-safe) every checkpoint at or before
+        up_to_checkpoint_number that still needs its name/description,
+        and submits each one claimed to the shared, process-wide thread
+        pool. Safe to call repeatedly/concurrently for the same trip - the
+        claim is what guarantees two calls (the initial bootstrap and a
+        proximity lookahead landing together, or two overlapping syncs)
+        never both resolve the same checkpoint. Uses the session/trip the
+        caller already has open rather than starting its own - both
+        bootstrap_checkpoint_metadata() and _notify_progress() call this
+        from inside a session they're already mid-way through."""
+        trip_id = trip.id
+        for checkpoint in trip.checkpoints:
+            if checkpoint.checkpoint_number > up_to_checkpoint_number or checkpoint.metadata_status == "ready":
+                continue
+            if trips.claim_checkpoint_for_metadata(session, checkpoint.id):
+                coordinates = Coordinates(lat=checkpoint.lat, lng=checkpoint.lng)
+                _checkpoint_metadata_executor.submit(self._resolve_checkpoint_metadata, trip_id, checkpoint.id, coordinates)
+
+    def _resolve_checkpoint_metadata(self, trip_id: uuid.UUID, checkpoint_id: uuid.UUID, coordinates: Coordinates) -> None:
+        """One checkpoint's real name + AI description, resolved and
+        persisted off the main request/sync thread - see
+        _ensure_checkpoint_metadata()'s thread pool above. A failure here
+        (Nominatim down, AI call raised - generate_checkpoint_description()
+        already degrades to a fallback line for the AI half, but
+        resolve_checkpoint_name() itself can still raise) releases the
+        claim back to "pending" rather than leaving the checkpoint stuck
+        "processing" forever - a later bootstrap/lookahead call retries
+        it."""
         try:
-            with ThreadPoolExecutor(max_workers=3, thread_name_prefix="checkpoint-description") as executor:
-                def on_checkpoint_found(checkpoint: Checkpoint) -> None:
-                    with SessionLocal() as session:
-                        row = trips.add_checkpoint(session, trip_id, checkpoint)
-                    self.events.notify(f"trip_checkpoints:{trip_id}", {"type": "checkpoint_added", "checkpoint": _checkpoint_state(row)})
-                    description_futures.append(executor.submit(self._describe_checkpoint, trip_id, row.id, checkpoint))
-
-                generate_checkpoints_progressive(route, self._geocoder, on_checkpoint_found)
-                for future in description_futures:
-                    future.result()  # propagates nowhere (each already catches its own errors) - just waits for the pool to drain
-        except Exception as e:
-            print(f"⚠️  generate_checkpoints_for_trip({trip_id}) failed partway through: {type(e).__name__}: {e}")
-        finally:
+            name = resolve_checkpoint_name(coordinates, self._geocoder)
+            description = generate_checkpoint_description(name, coordinates, self._describer)
             with SessionLocal() as session:
-                trip = trips.get_trip_by_id(session, trip_id)
-                if trip is not None:
-                    trips.mark_checkpoints_ready(session, trip)
-            self.events.notify(f"trip_checkpoints:{trip_id}", {"type": "checkpoints_ready"})
-
-    def _describe_checkpoint(self, trip_id: uuid.UUID, checkpoint_id: uuid.UUID, checkpoint: Checkpoint) -> None:
-        """One checkpoint's AI description, generated and persisted off
-        the main discovery loop - see generate_checkpoints_for_trip()'s
-        thread pool above. generate_description() already degrades to a
-        plain fallback line on a model/network failure, so this never
-        leaves a checkpoint stuck "pending"."""
-        described = generate_description(checkpoint, self._describer)
-        with SessionLocal() as session:
-            row = trips.set_checkpoint_description(session, checkpoint_id, described.description)
-            if row is None:
-                return  # checkpoint (or its trip) was deleted while this was in flight
-            state = _checkpoint_state(row)
-        self.events.notify(f"trip_checkpoints:{trip_id}", {"type": "checkpoint_updated", "checkpoint": state})
+                row = trips.set_checkpoint_metadata(session, checkpoint_id, name, description)
+                if row is None:
+                    return  # checkpoint (or its trip) was deleted while this was in flight
+                state = _checkpoint_state(row)
+            self.events.notify(f"trip_checkpoints:{trip_id}", {"type": "checkpoint_updated", "checkpoint": state})
+        except Exception as e:
+            print(f"⚠️  checkpoint metadata resolution failed for checkpoint {checkpoint_id}: {type(e).__name__}: {e}")
+            with SessionLocal() as session:
+                trips.release_checkpoint_metadata_claim(session, checkpoint_id)
 
     def record_steps(self, user_id: uuid.UUID, steps: int, interval=None) -> list[dict]:
         """Real steps happen once but can count toward several trips at
@@ -294,26 +340,39 @@ class TravelFacade:
             return self._build_map_state(trip)
 
     def get_checkpoint_backlog(self, user_id: uuid.UUID, trip_id: uuid.UUID) -> tuple[list[dict], bool]:
-        """Whatever checkpoints generate_checkpoints_for_trip() has
-        persisted for this trip so far, plus whether it's finished - GET
-        /api/journey/{trip_id}/events's (app.py) starting snapshot before
-        it subscribes for live checkpoint_added/checkpoint_updated events,
-        so a client connecting mid-generation (or well after it finished)
-        still sees every checkpoint that already exists. user_id-scoped,
-        same as get_map_state() - this is a user-facing endpoint, unlike
-        generate_checkpoints_for_trip() itself."""
+        """Every checkpoint that exists for this trip (all of them, always -
+        see database/trips.py's create_trip()), plus whether the trip is
+        already finished - GET /api/journey/{trip_id}/events's (app.py)
+        starting snapshot before it subscribes for live checkpoint_updated
+        events. "Already finished" is the real "no more events are ever
+        coming" signal now (metadata/reveal events keep trickling in for
+        the whole rest of an active trip, not just some early generation
+        window) - see _notify_progress()'s "finished" milestone branch,
+        which fires the matching live checkpoints_ready event. user_id-
+        scoped, same as get_map_state() - this is a user-facing endpoint,
+        unlike bootstrap_checkpoint_metadata() itself."""
         with SessionLocal() as session:
             trip = trips.get_trip(session, trip_id, user_id)
             if trip is None:
                 raise ValueError(f"No trip {trip_id!r} for user_id={user_id!r}")
-            return [_checkpoint_state(c) for c in trip.checkpoints], trip.checkpoints_ready_at is not None
+            return [_checkpoint_state(c) for c in trip.checkpoints], trip.status == "completed"
 
     def list_trips(self, user_id: uuid.UUID) -> list[dict]:
         """Every trip belonging to this user (in progress or finished),
-        summarized for the trips list UI - no per-trip network calls, just
-        what's already on the row plus a lightweight thumbnail polyline."""
+        summarized for the trips list UI - no per-trip network calls, no
+        per-trip route rebuild, just what's already on the row (trips.
+        list_trips() eager-loads checkpoints in one batched query) plus
+        one batched steps query across every trip returned here. This
+        used to be the cheap half of a two-part load: the frontend called
+        this, then fetched full map state (_build_map_state(), including
+        a full route rebuild - see its own docstring) per active trip just
+        to get its current checkpoint and step count. Computing both
+        straight from data this method already has removes that second,
+        much more expensive round trip entirely - see HomePage.tsx."""
         with SessionLocal() as session:
-            return [_trip_summary(trip) for trip in trips.list_trips(session, user_id)]
+            trip_rows = trips.list_trips(session, user_id)
+            steps_by_trip = self._db.total_steps_by_trip([trip.id for trip in trip_rows])
+            return [_trip_summary(trip, steps_by_trip.get(trip.id, 0)) for trip in trip_rows]
 
     def pause_journey(self, user_id: uuid.UUID, trip_id: uuid.UUID) -> dict:
         with SessionLocal() as session:
@@ -369,12 +428,22 @@ class TravelFacade:
         )
 
     def _notify_progress(self, session: Session, trip: ActiveTrip) -> list[TripCheckpoint]:
-        """Checkpoint-hit and halfway/finished checks, in one place so
-        record_steps and record_workout don't each repeat this. Fires
-        self.events.notify() per event type; returns the newly-hit
-        checkpoints (callers still need that list for their own return
-        dict)."""
+        """Checkpoint-reveal, checkpoint-hit, and halfway/finished checks,
+        in one place so record_steps and record_workout don't each repeat
+        this. Fires self.events.notify() per event type; returns the
+        newly-hit checkpoints (callers still need that list for their own
+        return dict)."""
         _route, progress = _locate(trip)
+
+        newly_revealed = trips.mark_checkpoints_revealed(session, trip, progress.distance_walked_m)
+        if newly_revealed:
+            # Keep METADATA_LOOKAHEAD checkpoints beyond the furthest one
+            # just revealed pre-resolved, so the walker is never the one
+            # waiting on Nominatim/AI as they keep moving forward.
+            furthest_revealed_number = max(c.checkpoint_number for c in newly_revealed)
+            self._ensure_checkpoint_metadata(session, trip, up_to_checkpoint_number=furthest_revealed_number + METADATA_LOOKAHEAD)
+            for checkpoint in newly_revealed:
+                self.events.notify(f"trip_checkpoints:{trip.id}", {"type": "checkpoint_updated", "checkpoint": _checkpoint_state(checkpoint)})
 
         newly_hit_checkpoints = trips.mark_checkpoints_hit(session, trip, progress.distance_walked_m)
         for checkpoint in newly_hit_checkpoints:
@@ -404,6 +473,11 @@ class TravelFacade:
                 trips.complete_trip(session, trip)
                 total_steps = self._db.total_steps(str(trip.id))
                 self.events.notify("finished", f"🏆 You reached {trip.to_place} in {total_steps} steps! Congrats!")
+                # The real "no more checkpoint events are ever coming for
+                # this trip" signal now (see get_checkpoint_backlog()'s
+                # docstring) - GET /api/journey/{id}/events's live loop
+                # (app.py) closes the stream on this.
+                self.events.notify(f"trip_checkpoints:{trip.id}", {"type": "checkpoints_ready"})
 
         return newly_hit_checkpoints
 
@@ -430,7 +504,7 @@ class TravelFacade:
             "round_trip": trip.round_trip,
             "start": {"lat": trip.start_lat, "lng": trip.start_lng},
             "end": {"lat": trip.end_lat, "lng": trip.end_lng},
-            "route_geometry": trip.route_geometry,
+            "route_geometry": _route_geometry_latlng(trip.route_geometry),
             "walked_geometry": _walked_geometry(route, progress),
             "current_position": {"lat": progress.coords.lat, "lng": progress.coords.lng},
             "total_distance_m": trip.total_distance_m,
@@ -444,21 +518,30 @@ class TravelFacade:
             "today_steps": self._db.today_steps(trip_id_str),
             "started_at": trip.started_at.isoformat(),
             "elapsed_seconds": elapsed_seconds,
-            # False right after start_journey() - checkpoints is still []
-            # at that point, being filled in by generate_checkpoints_for_
-            # trip() (a FastAPI background task, see app.py) - lets the
-            # frontend know whether to open GET /api/journey/{id}/events
-            # at all (a trip loaded well after the fact has nothing left
-            # to stream).
-            "checkpoints_ready": trip.checkpoints_ready_at is not None,
+            # True only once the trip itself is finished - metadata/reveal
+            # events keep trickling in for an active trip's whole
+            # duration now (checkpoints aren't resolved/revealed all at
+            # once any more), so "ready" no longer means "discovery
+            # finished early on" the way it used to. Lets the frontend
+            # know whether GET /api/journey/{id}/events still has
+            # anything left to stream (a finished trip doesn't).
+            "checkpoints_ready": trip.status == "completed",
+            "total_checkpoints": len(trip.checkpoints),
+            # Proximity-revealed, not metadata-ready - a checkpoint shows
+            # up on the map (name still filling in, maybe) well before
+            # its description is ready. Never conflate the two: "ready"
+            # describes the AI/geocoding pipeline's own progress, this
+            # describes what the walker has actually uncovered so far.
+            "discovered_checkpoints": sum(1 for c in trip.checkpoints if c.revealed_at is not None),
             "checkpoints": [_checkpoint_state(c) for c in trip.checkpoints],
         }
 
-    def search_places(self, query: str, limit: int = 5) -> list:
+    def search_places(self, query: str, limit: int = 5) -> list[Place]:
         """Autocomplete candidates for app.py's Where From/Where To
-        dropdowns. Thin passthrough to the geocoder - kept here (not
-        called directly by app.py) so the UI only ever talks to the
-        facade, matching this module's "single entry point" role."""
+        dropdowns - see Geocoder.search_places() for the normalized Place
+        shape. Thin passthrough to the geocoder - kept here (not called
+        directly by app.py) so the UI only ever talks to the facade,
+        matching this module's "single entry point" role."""
         return self._geocoder.search_places(query, limit)
 
     def current_location_place(self, lat: float, lng: float) -> str:
@@ -478,11 +561,20 @@ def _elapsed_seconds(trip: ActiveTrip, now: datetime) -> float:
     return (now - trip.started_at).total_seconds() - trip.total_paused_seconds - ongoing_pause_seconds
 
 
-def _trip_summary(trip: ActiveTrip) -> dict:
+def _trip_summary(trip: ActiveTrip, total_steps: int = 0) -> dict:
     """The trips-list UI's per-card shape: enough to render a thumbnail,
-    the from -> to line, and progress, without pulling in checkpoints or
-    re-deriving current position the way _build_map_state() does for the
-    live map."""
+    the from -> to line, progress, step count, and current checkpoint -
+    everything ActiveTripCard/CompletedTripCard need (frontend/src/
+    components/TripCard.tsx) - without re-deriving current position or
+    rebuilding the route the way _build_map_state() does for the live
+    map. total_steps is passed in (one batched query across every trip -
+    see list_trips() above), not looked up here per trip.
+
+    trip.checkpoints is expected already eager-loaded (trips.list_trips()
+    uses selectinload) - reading it here must never trigger its own
+    per-trip query."""
+    hit_checkpoints = [c for c in trip.checkpoints if c.hit_at is not None]
+    current_checkpoint = hit_checkpoints[-1].name if hit_checkpoints else None
     return {
         "trip_id": str(trip.id),
         "status": trip.status,
@@ -496,18 +588,24 @@ def _trip_summary(trip: ActiveTrip) -> dict:
         "percent_complete": min(100.0, (trip.meters_walked / trip.total_distance_m * 100) if trip.total_distance_m else 0.0),
         "started_at": trip.started_at.isoformat(),
         "thumbnail_route": _thumbnail_route(trip.route_geometry),
+        "total_steps": total_steps,
+        "current_checkpoint_name": current_checkpoint,
     }
 
 
 def _thumbnail_route(route_geometry: list[dict], max_points: int = 24) -> list[dict]:
     """route_geometry, downsampled to a small handful of points - plenty
     to draw a recognizable sparkline-style thumbnail on a trip card, at a
-    fraction of the full polyline's size."""
-    if len(route_geometry) <= max_points:
-        return route_geometry
-    step = len(route_geometry) / max_points
-    indices = sorted({round(i * step) for i in range(max_points)} | {len(route_geometry) - 1})
-    return [route_geometry[min(i, len(route_geometry) - 1)] for i in indices]
+    fraction of the full polyline's size. Stripped to lat/lng (see
+    _route_geometry_latlng()) - the thumbnail is already tiny, but there's
+    still no reason to ship the internal "d" bookkeeping field to a
+    client that only ever draws points."""
+    geometry = _route_geometry_latlng(route_geometry)
+    if len(geometry) <= max_points:
+        return geometry
+    step = len(geometry) / max_points
+    indices = sorted({round(i * step) for i in range(max_points)} | {len(geometry) - 1})
+    return [geometry[min(i, len(geometry) - 1)] for i in indices]
 
 
 def _locate(trip: ActiveTrip) -> tuple[Route, Progress]:
@@ -519,9 +617,66 @@ def _locate(trip: ActiveTrip) -> tuple[Route, Progress]:
 def _route_from_geometry(route_geometry: list[dict]) -> Route:
     """Rebuilds the same Route shape OSRM originally returned, from the
     trip's stored polyline - no network call back to OSRM needed just to
-    locate where the user currently is."""
+    locate where the user currently is.
+
+    Every point here carries its own persisted "d" (distance_from_start)
+    now - see database/trips.py's create_trip(), which writes it once,
+    straight from the real OSRM response. Trusting it (via
+    _route_from_persisted_distances() below) means this never re-measures
+    every adjacent pair's distance with build_route()'s own
+    haversine_meters() call on every single read. That recompute was
+    measured at ~200ms of pure CPU for a real stored ~80k-point route
+    (a genuinely common size here - cross-continental trips aren't an
+    edge case in this app) - the same code path runs on every
+    /api/journey/state call, including every 20s poll while a trip's map
+    is open, so a long trip's map visibly took longer to appear than a
+    short trip's, and every poll after that repeated the same cost. A row
+    written before "d" existed falls back to the original, slower
+    build_route() path below - same result, just not free."""
+    if route_geometry and "d" in route_geometry[0]:
+        return _route_from_persisted_distances(route_geometry)
     coords = [Coordinates(lat=point["lat"], lng=point["lng"]) for point in route_geometry]
     return build_route(coords)
+
+
+def _route_from_persisted_distances(route_geometry: list[dict]) -> Route:
+    """The fast path _route_from_geometry() above takes when every point
+    already carries its own "d". Builds each RoutePoint directly from
+    that persisted distance - distance_to_previous/distance_to_next are
+    then one subtraction between neighbors (exactly what build_route()'s
+    own gaps[] would have computed, since distance_from_start is just
+    their running sum - not an approximation of it), never a fresh
+    haversine_meters() call. Neither distance_to_previous nor
+    distance_to_next is actually read anywhere on this read path
+    (locate_on_route(), _walked_geometry()) - they're computed here only
+    to keep returning a real, fully-populated RoutePoint, in case a
+    future caller of this Route does need them."""
+    n = len(route_geometry)
+    total_distance = route_geometry[-1]["d"] if route_geometry else 0.0
+    points = []
+    for i, point in enumerate(route_geometry):
+        distance_from_start = point["d"]
+        points.append(RoutePoint(
+            coords=Coordinates(lat=point["lat"], lng=point["lng"]),
+            point_number=i + 1,
+            distance_from_start=distance_from_start,
+            distance_to_destination=total_distance - distance_from_start,
+            distance_to_previous=distance_from_start - route_geometry[i - 1]["d"] if i > 0 else 0.0,
+            distance_to_next=route_geometry[i + 1]["d"] - distance_from_start if i + 1 < n else 0.0,
+        ))
+    return Route(points=points, total_distance=total_distance, point_count=n)
+
+
+def _route_geometry_latlng(route_geometry: list[dict]) -> list[dict]:
+    """trip.route_geometry's stored shape now carries an internal "d"
+    (distance_from_start - see create_trip()) alongside lat/lng, purely
+    so this process can rebuild the route cheaply (see
+    _route_from_geometry() above). The frontend only ever draws lat/lng
+    (frontend/src/components/tripMap.ts) - sending "d" back out in every
+    API response would just be re-growing the same long-route payload
+    this change exists to shrink, for a field nothing on the other end
+    reads."""
+    return [{"lat": point["lat"], "lng": point["lng"]} for point in route_geometry]
 
 
 def _walked_geometry(route: Route, progress: Progress) -> list[dict]:
@@ -548,7 +703,18 @@ def _checkpoint_state(checkpoint: TripCheckpoint) -> dict:
         "coords": {"lat": checkpoint.lat, "lng": checkpoint.lng},
         "distance_from_start_m": checkpoint.distance_from_start_m,
         "description": checkpoint.description,
-        "description_status": checkpoint.description_status,
+        # Keeping the field name "description_status" (not "metadata_
+        # status", the DB column's own, more accurate name since it now
+        # also governs name resolution, not just description) - the
+        # frontend's existing "!== 'ready' -> still generating" check
+        # already treats the new "processing" value exactly like
+        # "pending" with zero code changes, and nothing downstream needs
+        # the field renamed to keep working.
+        "description_status": checkpoint.metadata_status,
+        # Proximity-revealed - see ActiveTrip.checkpoint_reveal_radius_m
+        # and TripCheckpoint.revealed_at. The frontend only ever renders a
+        # checkpoint marker when this is true.
+        "revealed": checkpoint.revealed_at is not None,
         "hit": checkpoint.hit_at is not None,
         "hit_at": checkpoint.hit_at.isoformat() if checkpoint.hit_at is not None else None,
     }

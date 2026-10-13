@@ -97,7 +97,6 @@ def test_register_points_at_the_real_webhook_route(monkeypatch):
         return {}
 
     monkeypatch.setattr(rws, "_upsert_subscriber", fake_upsert_subscriber)
-    monkeypatch.setattr(rws, "_connected_provider_user_ids", lambda: [])
 
     rws.register("https://worldwalker.example.com", "my-project")
 

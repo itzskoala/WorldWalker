@@ -12,6 +12,11 @@
 # (EmailNotificationConfig - a per-user setting only an existing,
 # logged-in user has configured). A signup code has to go out before any
 # of that exists, from WorldWalker's own platform sender instead.
+#
+# Currently unused: the two-step "email a code" signup flow is disabled
+# in favor of accounts/service.py's signup() creating the account
+# directly - see the TODO(otp) notes there and in accounts/router.py.
+# Kept so reviving that flow later is just uncommenting, not rebuilding.
 
 import os
 

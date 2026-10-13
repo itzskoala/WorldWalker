@@ -30,24 +30,19 @@
 # "auth/health" as a scope isn't recognized, so Google's token endpoint
 # falls back to minting an id_token instead of an access_token.
 #
-# "sleep" needs its own handling: subscriptionCreatePolicy=AUTOMATIC 409s
-# for it (SLEEP_ALREADY_EXISTS). Google's own docs pair "sleep" with
-# MANUAL policy (unlike steps/weight, shown as AUTOMATIC), which needs:
-#   1. The subscriber's own subscriberConfigs to declare "sleep" under
-#      MANUAL (a separate list entry, alongside the AUTOMATIC one) -
-#      without this, creating the per-user subscription 400s as
-#      FAILED_PRECONDITION.
-#   2. A per-user Subscription resource, keyed by healthUserId - one per
-#      connected WorldWalker user, read from our own GoogleHealthConnection
-#      rows (each was resolved via the .profile.readonly scope at connect
-#      time - see auth/connections.py - so this script never has to call
-#      Google's identity API itself).
+# Only "steps"/"exercise" are subscribed - not "sleep"/"heart-rate":
+# auth/google_health_auth.py's SCOPES doesn't request those (Google
+# Health's sleep/heart-rate scopes are Restricted and nothing in
+# WorldWalker uses that data yet - see docs/google_oauth_verification.md).
+# A no-longer-granted scope's data type can't be subscribed to anyway.
+# Note for whoever re-adds sleep later: it needs its own handling
+# (subscriptionCreatePolicy=MANUAL, not AUTOMATIC - Google's own docs
+# pair "sleep" with MANUAL, unlike steps/weight) - see this file's git
+# history for the working implementation this once had.
 #
-# Re-running: an earlier version of this script deleted the subscriber
-# before recreating it, which 400s (FAILED_PRECONDITION) once a manual
-# sleep subscription is attached as a child - Google won't delete a
-# subscriber with active child subscriptions. PATCH-if-exists avoids that
-# entirely.
+# Re-running: PATCH-if-exists (_upsert_subscriber below), not
+# delete-then-recreate - deleting a subscriber with any active child
+# subscription 400s (FAILED_PRECONDITION).
 
 import os
 import sys
@@ -59,18 +54,13 @@ import google.auth.transport.requests
 from dotenv import load_dotenv
 from google.oauth2 import service_account
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # so `database` is importable
-from database.models import GoogleHealthConnection
-from database.session import SessionLocal
-
 load_dotenv()
 
 ROOT = Path(__file__).resolve().parent.parent
 SERVICE_ACCOUNT_PATH = ROOT / "service-account.json"
 SUBSCRIBER_ID = "worldwalker"
 WEBHOOK_SECRET = os.environ["WEBHOOK_SECRET"]  # must match services/google_health/webhook.py
-AUTOMATIC_DATA_TYPES = ["steps", "exercise", "heart-rate"]
-MANUAL_DATA_TYPES = ["sleep"]
+AUTOMATIC_DATA_TYPES = ["steps", "exercise"]
 
 
 def _service_account_token() -> str:
@@ -102,26 +92,6 @@ def _upsert_subscriber(base: str, body: dict) -> dict:
         return create_response.json()
     _raise_with_body(patch_response)
     return patch_response.json()
-
-
-def _sleep_subscription_exists(base: str, health_user_id: str) -> bool:
-    list_response = _request("GET", f"{base}/{SUBSCRIBER_ID}/subscriptions")
-    _raise_with_body(list_response)
-    subscriptions = list_response.json().get("subscriptions", [])
-    return any(sub.get("user") == f"users/{health_user_id}" for sub in subscriptions)
-
-
-def _connected_provider_user_ids() -> list[str]:
-    """provider_user_id (healthUserId) for every WorldWalker user with an
-    active Google Health connection - read straight from our own DB, not
-    Google's identity API, since we already stored each one the moment
-    that user connected (see auth/connections.py::upsert_connection_from_tokens).
-    A manual "sleep" subscription is per-Google-account, so every
-    connected account needs its own, not just whichever one happened to
-    be active when this script last ran."""
-    with SessionLocal() as session:
-        connections = session.query(GoogleHealthConnection).filter_by(status="active").all()
-        return [connection.provider_user_id for connection in connections]
 
 
 _LOCAL_HOSTS = ("localhost", "127.0.0.1", "0.0.0.0")
@@ -179,30 +149,11 @@ def register(public_url: str | None, project_id: str | None):
         "endpointUri": endpoint_uri,
         "subscriberConfigs": [
             {"dataTypes": AUTOMATIC_DATA_TYPES, "subscriptionCreatePolicy": "AUTOMATIC"},
-            {"dataTypes": MANUAL_DATA_TYPES, "subscriptionCreatePolicy": "MANUAL"},
         ],
         "endpointAuthorization": {"secret": WEBHOOK_SECRET},
     })
-    print("Subscriber (steps/exercise/heart-rate/sleep):")
+    print("Subscriber (steps/exercise):")
     print(json.dumps(subscriber, indent=2))
-
-    provider_user_ids = _connected_provider_user_ids()
-    if not provider_user_ids:
-        print("\nManual subscription (sleep): no connected users yet, nothing to subscribe.")
-        return
-
-    for health_user_id in provider_user_ids:
-        if _sleep_subscription_exists(base, health_user_id):
-            print(f"\nManual subscription (sleep) for {health_user_id}: already exists, skipping.")
-            continue
-
-        create_response = _request("POST", f"{base}/{SUBSCRIBER_ID}/subscriptions", {
-            "user": f"users/{health_user_id}",
-            "dataTypes": MANUAL_DATA_TYPES,
-        })
-        _raise_with_body(create_response)
-        print(f"\nManual subscription (sleep) for {health_user_id}:")
-        print(json.dumps(create_response.json(), indent=2))
 
 
 if __name__ == "__main__":

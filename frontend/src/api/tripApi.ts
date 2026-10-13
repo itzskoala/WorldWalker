@@ -1,6 +1,7 @@
-// Typed client for app.py's /api/places/* and /api/journey/* routes.
+// Typed client for app.py's /api/places/*, /api/route/*, and
+// /api/journey/* routes.
 
-import type { Checkpoint, JourneyStartResponse, PlaceSuggestion, TripMapState, TripSummary } from '../types/trip'
+import type { Checkpoint, Coordinates, JourneyStartResponse, PlaceSuggestion, TripMapState, TripSummary } from '../types/trip'
 import { apiFetch, parseErrorMessage } from './httpClient'
 
 export async function searchPlaces(query: string): Promise<PlaceSuggestion[]> {
@@ -17,10 +18,54 @@ export async function reversePlace(lat: number, lng: number): Promise<string> {
   return data.place
 }
 
+/** POST /api/route/validate's result, for CreatePage.tsx's location-picking
+ * UI - not the "Start Walking" flow, which never calls this (see
+ * app.py's docstring on that route). `valid: null` means the check itself
+ * couldn't be completed (network error, OSRM unreachable) - distinct from
+ * `valid: false`, a real "no" from the routing provider. Callers must not
+ * treat the two the same: only a real `false` should ever clear a field. */
+export type RouteValidationResult =
+  | { valid: true }
+  | { valid: false; reason: 'too_close' | 'no_route' }
+  | { valid: null }
+
+export async function validateRoute(from: Coordinates, to: Coordinates, signal?: AbortSignal): Promise<RouteValidationResult> {
+  try {
+    const res = await fetch('/api/route/validate', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from_lat: from.lat, from_lng: from.lng, to_lat: to.lat, to_lng: to.lng }),
+      signal,
+    })
+    // A non-2xx here is app.py's 502 for "couldn't reach OSRM" - not a
+    // real invalid-route answer, so this reports "unknown" rather than
+    // `false`.
+    if (!res.ok) return { valid: null }
+    const data = (await res.json()) as { valid: boolean; reason: 'too_close' | 'no_route' | null }
+    return data.valid ? { valid: true } : { valid: false, reason: data.reason as 'too_close' | 'no_route' }
+  } catch (err) {
+    // An AbortError (a superseded, in-flight validation) is deliberately
+    // left to propagate - the caller's own stale-request guard handles
+    // it, same as PlaceAutocomplete.tsx's debounced search. Anything else
+    // here (offline, DNS, ...) is the same "couldn't check" case as a 502.
+    if ((err as Error).name === 'AbortError') throw err
+    return { valid: null }
+  }
+}
+
 export interface StartJourneyRequest {
   from_place: string
   to_place: string
   round_trip?: boolean
+  // The coordinates PlaceAutocomplete already resolved from_place/to_place
+  // to, if it did - lets app.py skip re-geocoding the free-text label (see
+  // its JourneyStartRequest docstring on why that re-geocode can fail for
+  // labels like an airport's "Chile Chico Airport (CCH), Chile Chico, CL").
+  from_lat?: number
+  from_lng?: number
+  to_lat?: number
+  to_lng?: number
 }
 
 export async function startJourney(body: StartJourneyRequest): Promise<JourneyStartResponse> {

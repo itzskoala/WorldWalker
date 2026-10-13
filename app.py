@@ -8,18 +8,25 @@
 # render client-side.
 
 import json
+import math
 import os
 import queue
+import traceback
 import uuid
+from dataclasses import asdict
 from pathlib import Path
+from typing import Optional
 
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from starlette.middleware.gzip import GZipMiddleware
 
 from travel_logic.coordinates import Coordinates
-from travel_logic.geocoder import NominatimGeocoder
+from travel_logic.geocoder import create_geocoder
+from travel_logic.route_service import OSRMWalkingRouteService
+from travel_logic.route_validation import RouteUnavailable, validate_walking_route
 from accounts.dependencies import get_current_user
 from accounts.router import router as accounts_router
 from auth.router import router as auth_router
@@ -39,10 +46,42 @@ FRONTEND_DIST = ROOT / "frontend" / "dist"
 API_PREFIXES = ("api/", "auth/", "notifications/")
 
 app = FastAPI(title="WorldWalker")
+# A long trip's /api/journey/state (polled every 20s while its map is
+# open - frontend/src/pages/TripDetailPage.tsx) carries one {lat, lng}
+# object per route point, and a real stored route here can run into the
+# tens of thousands of points (confirmed against real data - a
+# cross-continental walk is not a hypothetical in this app) - several MB
+# of JSON, uncompressed, on every single request. That's a much bigger
+# contributor to "this trip's map took a while to appear" than any
+# server-side CPU cost: gzip shrinks this kind of repetitive
+# float/key-heavy JSON by roughly 85-90% in practice, and every browser
+# already sends Accept-Encoding: gzip, so this is free on the client side
+# - no API shape change, nothing for any caller to opt into.
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 app.include_router(accounts_router)
 app.include_router(auth_router)
 app.include_router(webhook_router)
 app.include_router(notifications_router)
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    """Starlette's own default for an uncaught exception is a bare
+    "Internal Server Error" text body, not JSON - every client here
+    (frontend/src/api/httpClient.ts's parseErrorMessage) can only fall
+    back to its own generic per-call message when that happens, with no
+    way to tell "OSRM is down" from "the database rejected a write" from
+    a real bug. That's exactly what masked a real one for a while
+    (2026-10, during a brief Clerk-based identity experiment since
+    reverted - see accounts/dependencies.py's get_current_user): a
+    FastAPI Depends() failure runs *before* a route's own try/except
+    ever gets a chance, so no per-route handler below could have caught
+    it either way - only a handler registered here, for the whole app,
+    sees every one of those. The traceback this prints is what actually
+    diagnosed that incident (Vercel's own runtime logs capture stdout) -
+    still the right fallback for whatever's next, known cause or not."""
+    print(f"⚠️  Unhandled error on {request.method} {request.url.path}:\n{traceback.format_exc()}")
+    return JSONResponse({"error": "Something went wrong on our end. Please try again."}, status_code=500)
 # Local dev only (uvicorn serving this file directly): frontend/dist
 # exists because `npm run build` was run locally. In production,
 # vercel.json's own routes serve /assets, /images, and everything else
@@ -63,7 +102,8 @@ if (FRONTEND_DIST / "images").is_dir():
     # to assets/, same as /assets above.
     app.mount("/images", StaticFiles(directory=FRONTEND_DIST / "images"), name="frontend-images")
 
-_geocoder = NominatimGeocoder()
+_geocoder = create_geocoder()
+_router = OSRMWalkingRouteService()
 
 
 def _google_signin_client_id() -> str:
@@ -93,18 +133,15 @@ def public_config():
     return {"google_client_id": _google_signin_client_id(), "apple_client_id": _apple_signin_client_id()}
 
 
-def _place_suggestion(display_name: str) -> dict:
-    """Split Nominatim's "Miami, Miami-Dade County, Florida, United States"
-    into a bold primary line + a muted secondary line for the dropdown -
-    matches Google Flights' two-line airport/city rows."""
-    primary, _, rest = display_name.partition(", ")
-    return {"value": display_name, "primary": primary or display_name, "secondary": rest}
-
-
 @app.get("/api/places/search")
 def search_places(q: str = Query(default="", max_length=200)):
-    results = _geocoder.search_places(q, limit=6)
-    return {"results": [_place_suggestion(r) for r in results]}
+    # Each Place is already in the exact shape the frontend's
+    # PlaceSuggestion type expects (travel_logic/geocoder.py's Place
+    # docstring) - whichever Geocoder is behind _geocoder did the
+    # provider-specific work (splitting Nominatim's comma-joined
+    # display_name today, something else for a different provider) before
+    # this ever saw it, so there's no reshaping left to do here.
+    return {"results": [asdict(place) for place in _geocoder.search_places(q, limit=6)]}
 
 
 @app.get("/api/places/reverse")
@@ -116,10 +153,62 @@ def reverse_place(lat: float, lng: float):
     return {"place": place}
 
 
+class RouteValidateRequest(BaseModel):
+    from_lat: float
+    from_lng: float
+    to_lat: float
+    to_lng: float
+
+
+def _valid_coordinate(lat: float, lng: float) -> bool:
+    return math.isfinite(lat) and math.isfinite(lng) and -90.0 <= lat <= 90.0 and -180.0 <= lng <= 180.0
+
+
+@app.post("/api/route/validate")
+def validate_route(body: RouteValidateRequest):
+    """Whether a walking route exists between two already-resolved
+    locations - CreatePage.tsx calls this right after both Where From/
+    Where To fields pick up coordinates, to clear an unwalkable selection
+    before "Start Walking" (which does this same OSRM call again, but as
+    part of actually persisting a trip - see core/facade.py's
+    start_journey()). A 502 here means OSRM itself couldn't be reached,
+    not that no route exists - the frontend must tell those apart (see
+    RouteUnavailable's docstring).
+
+    The range/finiteness check below is by hand, not a pydantic Field
+    constraint: Python's own json module accepts "Infinity"/"NaN" as an
+    extension, so a request really can arrive with a non-finite
+    from_lat/etc. A pydantic ge/le constraint would reject that too, but
+    FastAPI's default 422 handler echoes the rejected value back in the
+    error body, and Starlette's JSONResponse can't render a raw inf/nan
+    (json.dumps(..., allow_nan=False), per the JSON spec) - so validating
+    that way would 500 while trying to report the very error meant to
+    avoid one. Answering with a plain, hand-built body sidesteps that."""
+    if not (_valid_coordinate(body.from_lat, body.from_lng) and _valid_coordinate(body.to_lat, body.to_lng)):
+        return JSONResponse({"error": "Invalid coordinates."}, status_code=400)
+
+    try:
+        result = validate_walking_route(
+            _router,
+            Coordinates(lat=body.from_lat, lng=body.from_lng),
+            Coordinates(lat=body.to_lat, lng=body.to_lng),
+        )
+    except RouteUnavailable as e:
+        return JSONResponse({"error": str(e)}, status_code=502)
+    return {"valid": result.valid, "reason": result.reason}
+
+
 class JourneyStartRequest(BaseModel):
     from_place: str
     to_place: str
     round_trip: bool = False
+    # Optional: the coordinates the frontend's autocomplete already
+    # resolved from_place/to_place to - see IntakeRequest's own docstring
+    # on why these are preferred over re-geocoding the text.
+    from_lat: Optional[float] = None
+    from_lng: Optional[float] = None
+    to_lat: Optional[float] = None
+    to_lng: Optional[float] = None
 
 
 @app.post("/api/journey/start")
@@ -133,23 +222,40 @@ def start_journey(body: JourneyStartRequest, background_tasks: BackgroundTasks, 
             to_place=body.to_place,
             round_trip=body.round_trip,
             user_id=current_user.id,
+            from_lat=body.from_lat,
+            from_lng=body.from_lng,
+            to_lat=body.to_lat,
+            to_lng=body.to_lng,
         )
         state = start_journey_from_intake(intake)
     except ValueError as e:
-        return JSONResponse({"error": str(e)}, status_code=400)
+        # start_journey()'s own ValueErrors carry a raw, developer-facing
+        # repr (geocoder.py's "No match for '<place>'", route_service.py's
+        # "No walking route between Coordinates(lat=...) and
+        # Coordinates(lat=...): <detail>") - never meant for the client to
+        # render verbatim. CreatePage.tsx's own pre-flight POST
+        # /api/route/validate is the real gate against an unwalkable pair
+        # reaching here at all; this 400 is the last-resort fallback for
+        # whatever slips past that (a race between picking a location and
+        # that check landing, a direct API call, ...), so a single generic
+        # message covers it - the real detail still goes to the server log.
+        print(f"⚠️  /api/journey/start: {e}")
+        return JSONResponse({"error": "We couldn't find a walkable route between those two places."}, status_code=400)
     except Exception as e:
         # Real external dependencies (geocoding, routing) can fail at
         # runtime - fail soft with a friendly message instead of a 500.
         print(f"⚠️  /api/journey/start failed: {type(e).__name__}: {e}")
         return JSONResponse({"coming_soon": True}, status_code=200)
 
-    # The map/route is the critical path (state["checkpoints"] is always
-    # [] here - start_journey_from_intake() no longer waits on checkpoint
-    # discovery or AI descriptions, see core/facade.py's start_journey()).
-    # That slow part runs after this response is on its way back to the
-    # browser; frontend/src/pages/TripDetailPage.tsx picks it up live via
-    # GET /api/journey/{trip_id}/events.
-    background_tasks.add_task(travel_facade.generate_checkpoints_for_trip, uuid.UUID(state["trip_id"]))
+    # The map/route is the critical path - every checkpoint's position
+    # already exists in state["checkpoints"] by the time this returns
+    # (see core/facade.py's start_journey()), just with name/description
+    # still blank for most of them. Resolving those is the slow part that
+    # runs after this response is on its way back to the browser: this
+    # kicks off just the first few checkpoints' worth, and
+    # frontend/src/pages/TripDetailPage.tsx picks up the rest live, as the
+    # walker approaches each one, via GET /api/journey/{trip_id}/events.
+    background_tasks.add_task(travel_facade.bootstrap_checkpoint_metadata, uuid.UUID(state["trip_id"]))
 
     return {"coming_soon": False, **state}
 
@@ -184,12 +290,17 @@ SSE_KEEPALIVE_SECONDS = 25
 @app.get("/api/journey/{trip_id}/events")
 def journey_events(trip_id: uuid.UUID, current_user: User = Depends(get_current_user)):
     """Live checkpoint_added/checkpoint_updated/checkpoints_ready events
-    for one trip, while core.facade.TravelFacade.generate_checkpoints_for_
-    trip() (kicked off by /api/journey/start above) discovers checkpoints
-    and generates their AI descriptions in the background - the
-    progressive-reveal half of "instant map, checkpoints/descriptions fill
-    in as they're ready" (frontend/src/pages/TripDetailPage.tsx). Ownership
-    is checked the same way journey_state() above does, via
+    for one trip. checkpoint_updated now covers two independent things -
+    a checkpoint's name/description finishing (core.facade.TravelFacade's
+    checkpoint-metadata pipeline, kicked off a little at a time by
+    /api/journey/start above and then lazily, as the walker approaches
+    each one, by _notify_progress()) and a checkpoint being proximity-
+    revealed on the map (also _notify_progress()) - the progressive-reveal
+    half of "instant map, checkpoints reveal and fill in as the walker
+    gets there" (frontend/src/pages/TripDetailPage.tsx). checkpoints_ready
+    now means the trip itself finished, not "checkpoint discovery
+    finished" - see get_checkpoint_backlog()'s docstring. Ownership is
+    checked the same way journey_state() above does, via
     get_checkpoint_backlog()'s trips.get_trip(session, trip_id, user_id).
 
     Subscribes BEFORE reading the current checkpoint list, not after -

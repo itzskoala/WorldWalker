@@ -60,7 +60,7 @@ def _issue_tokens(response: Response, user_id: uuid.UUID, remember_me: bool = Tr
 
 @router.get("/validate-email")
 def validate_email_route(email: str):
-    """The signup form's real-time check (frontend/src/pages/AuthPage.tsx) -
+    """The signup form's real-time check (frontend/src/pages/SignupPage.tsx) -
     same syntax+MX check accounts/service.py's signup() reruns
     server-side before ever creating the account, see accounts/email_validation.py."""
     return {"valid": email_validation.is_valid_email(email)}
@@ -70,7 +70,7 @@ def validate_email_route(email: str):
 def signup_route(body: SignupRequest, response: Response):
     """Creates the account and starts the session in one call - the
     signup form's real-time email check and the password-strength meter
-    (frontend/src/pages/AuthPage.tsx) are the only front-line checks
+    (frontend/src/pages/SignupPage.tsx) are the only front-line checks
     before this; accounts/service.py's signup() re-validates and is what
     actually decides."""
     with SessionLocal() as session:

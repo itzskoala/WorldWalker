@@ -1,9 +1,8 @@
 # tests/test_google_health_webhook.py
 # The real ingestion pipeline: webhook notification -> resolve which
 # WorldWalker user this Google account belongs to -> pull -> Strategy ->
-# typed object -> TravelFacade (steps/exercise) or a structured print
-# (sleep/heart-rate, no persistence yet). Tested against its own minimal
-# FastAPI app (not app.py) - same pattern as tests/test_auth_router.py.
+# typed object -> TravelFacade. Tested against its own minimal FastAPI
+# app (not app.py) - same pattern as tests/test_auth_router.py.
 #
 # process_notification() resolves the WorldWalker user from the
 # notification's own "healthUserId" field (Google's own identity - the
@@ -240,14 +239,14 @@ def test_notification_pull_failure_logs_cleanly_instead_of_raising(active_journe
     monkeypatch.setattr(webhook_module, "get_data_points", failing_get_data_points)
 
     notification = {
-        "dataType": "sleep",
+        "dataType": "steps",
         "operation": "UPSERT",
         "healthUserId": _health_user_id(user_id),
         "intervals": [{"physicalTimeInterval": {"startTime": "2026-09-01T05:00:00Z", "endTime": "2026-09-01T13:00:00Z"}}],
     }
     process_notification(notification)  # must not raise
 
-    assert "Failed to pull sleep" in capsys.readouterr().out
+    assert "Failed to pull steps" in capsys.readouterr().out
 
 
 def test_webhook_requires_auth_header():
@@ -300,7 +299,7 @@ def test_backfill_since_pulls_every_tracked_data_type_for_the_given_range(monkey
     provider_user_id = "some-google-account"
     backfill_since(provider_user_id, "2026-09-05T00:00:00Z", "2026-09-08T00:00:00Z")
 
-    assert set(BACKFILL_DATA_TYPES) == {"steps", "exercise", "sleep", "heart-rate"}
+    assert set(BACKFILL_DATA_TYPES) == {"steps", "exercise"}
     assert calls == []  # no connection for "some-google-account" - every pull is skipped, not crashed
 
 

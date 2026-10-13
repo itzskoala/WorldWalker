@@ -10,9 +10,10 @@ venv/bin/python3 -m uvicorn app:app --reload --port 8010
 
 ## 2. Connect
 Open http://127.0.0.1:8010/ in your browser and click **Connect**. Approve
-the Google consent screen (the 4 WorldWalker health scopes). You'll be
-redirected back to `/auth/google/callback`, which saves the connection to
-Postgres and bounces you back to `/`.
+the Google consent screen (the 2 WorldWalker health scopes - activity/
+fitness and profile; see docs/google_oauth_verification.md for why it's
+not more). You'll be redirected back to `/auth/google/callback`, which
+saves the connection to Postgres and bounces you back to `/`.
 
 Watch the terminal running uvicorn - you'll see:
 ```
@@ -30,8 +31,9 @@ venv/bin/python3 dev_testing/pull_data.py --today          # local midnight -> n
 venv/bin/python3 dev_testing/pull_data.py --hours 6         # last 6h
 venv/bin/python3 dev_testing/pull_data.py --start 2026-09-20 --end 2026-09-21   # explicit window
 ```
-Prints steps (server-side rollup total), heart rate, sleep, and activity
-for the requested window, plus your profile. `--today` uses this
+Prints steps (server-side rollup total) and activity for the requested
+window, plus your profile - not heart rate/sleep, see the Connect step
+above for why. `--today` uses this
 machine's local time zone (not UTC) - if your system clock/timezone is
 set correctly, that's "today" in your own time. `--start`/`--end` accept
 a bare date or a full timestamp; times with no timezone offset are read

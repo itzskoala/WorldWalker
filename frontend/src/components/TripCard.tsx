@@ -2,27 +2,23 @@
 // Active/paused trips get the fuller card (thumbnail, progress, current
 // checkpoint, steps, pause/resume); completed trips get a simpler one -
 // same distinction the vanilla version drew from the summary's `status`.
+//
+// TripSummary now carries percent_complete/current_checkpoint_name/
+// total_steps directly (core/facade.py's list_trips(), see
+// types/trip.ts) so neither card fetches its own TripMapState anymore -
+// this used to need one per active/paused trip just for those fields.
+//
+// Rename and "change photo" are newer, client-only affordances (see
+// hooks/useTripNameOverrides.ts) layered onto this card's original
+// layout - there's no trip_name column or photo-upload endpoint yet, so
+// both are UI hook points for a future backend, same idea as
+// components/walks/TripOverviewCard.tsx's versions of them.
 
-import type { MouseEvent } from 'react'
-import type { TripMapState, TripSummary, Coordinates } from '../types/trip'
-
-const METERS_PER_MILE = 1609.344
-
-function miles(meters: number): string {
-  return `${(meters / METERS_PER_MILE).toFixed(1)} mi`
-}
-
-function formatDate(iso: string): string {
-  return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
-}
-
-// checkpoints arrive already ordered by checkpoint_number (database/
-// models.py's TripCheckpoint relationship order_by) - the last hit one is
-// the most recently reached.
-function currentCheckpointLabel(checkpoints: TripMapState['checkpoints']): string {
-  const hit = checkpoints.filter((c) => c.hit)
-  return hit.length ? hit[hit.length - 1].name : 'Not reached yet'
-}
+import { useState } from 'react'
+import type { KeyboardEvent, MouseEvent } from 'react'
+import type { Coordinates, TripSummary } from '../types/trip'
+import { formatDate, formatMiles, metersToMiles } from '../lib/format'
+import { IconCamera, IconFootsteps, IconPencil, IconRoute, IconTrash } from './icons'
 
 function ThumbnailSvg({ routePoints }: { routePoints: Coordinates[] }) {
   if (!routePoints || routePoints.length < 2) return <svg viewBox="0 0 52 52" />
@@ -52,6 +48,22 @@ function ThumbnailSvg({ routePoints }: { routePoints: Coordinates[] }) {
   )
 }
 
+// Thumbnail + hover/focus "change photo" overlay - there's no photo
+// upload endpoint yet (components/walks/TripThumb.tsx notes the same),
+// so onEditThumbnail is a hook point for that future flow.
+function TripThumbButton({ routePoints, onEditThumbnail }: { routePoints: Coordinates[]; onEditThumbnail: (e: MouseEvent) => void }) {
+  return (
+    <button type="button" className="trip-card-thumb-button" onClick={onEditThumbnail} aria-label="Change trip photo">
+      <span className="trip-card-thumb">
+        <ThumbnailSvg routePoints={routePoints} />
+      </span>
+      <span className="trip-card-thumb-edit">
+        <IconCamera className="icon icon-sm" />
+      </span>
+    </button>
+  )
+}
+
 function RouteLine({ trip }: { trip: TripSummary }) {
   return (
     <div className="trip-card-route">
@@ -64,40 +76,97 @@ function RouteLine({ trip }: { trip: TripSummary }) {
   )
 }
 
+// The card's custom display name (the rename pencil's target) - falls
+// back to trip.to_place, same convention as components/walks/
+// TripOverviewCard.tsx, so a renamed trip reads consistently everywhere.
+function TripNameRow({ displayName, onRename }: { displayName: string; onRename: (name: string) => void }) {
+  const [isEditing, setIsEditing] = useState(false)
+  const [draft, setDraft] = useState(displayName)
+
+  function startEditing(e: MouseEvent) {
+    e.stopPropagation()
+    setDraft(displayName)
+    setIsEditing(true)
+  }
+
+  function commit() {
+    setIsEditing(false)
+    onRename(draft)
+  }
+
+  function handleKeyDown(e: KeyboardEvent<HTMLInputElement>) {
+    if (e.key === 'Enter') commit()
+    else if (e.key === 'Escape') setIsEditing(false)
+  }
+
+  if (isEditing) {
+    return (
+      <input
+        className="trip-card-name-input"
+        value={draft}
+        autoFocus
+        onClick={(e) => e.stopPropagation()}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={handleKeyDown}
+      />
+    )
+  }
+
+  return (
+    <span className="trip-card-name-row">
+      <span className="trip-card-name">{displayName}</span>
+      <button type="button" className="trip-card-edit-name" aria-label="Edit trip name" onClick={startEditing}>
+        <IconPencil className="icon icon-sm" />
+      </button>
+    </span>
+  )
+}
+
 function DeleteButton({ onClick }: { onClick: (e: MouseEvent) => void }) {
   return (
     <button type="button" className="trip-card-action is-delete" aria-label="Delete journey" onClick={onClick}>
-      <svg className="icon icon-sm" viewBox="0 0 24 24" fill="none">
-        <path
-          d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2m-9 0 1 12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-12"
-          stroke="currentColor"
-          strokeWidth="1.8"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-      </svg>
+      <IconTrash className="icon icon-sm" />
     </button>
   )
 }
 
 interface ActiveTripCardProps {
   trip: TripSummary
-  state: TripMapState
+  displayName: string
   onOpen: () => void
   onPauseResume: () => void
   onDelete: () => void
+  onRename: (name: string) => void
+  onEditThumbnail: () => void
 }
 
-export function ActiveTripCard({ trip, state, onOpen, onPauseResume, onDelete }: ActiveTripCardProps) {
-  const pct = Math.min(100, state.percent_complete).toFixed(0)
-  const isPaused = state.status === 'paused'
+export function ActiveTripCard({ trip, displayName, onOpen, onPauseResume, onDelete, onRename, onEditThumbnail }: ActiveTripCardProps) {
+  // percent_complete is the same field the Trip Detail map uses for its
+  // own progress bar/pill (TripDetailPage.tsx's `pct`) - reusing it here
+  // (rather than re-deriving a percentage from distance_walked_m/
+  // total_distance_m) keeps the two screens' numbers identical and
+  // avoids a client-side divide-by-zero if total_distance_m is ever 0.
+  // Finite-guarded in case a malformed summary ever omits it.
+  const pctValue = Number.isFinite(trip.percent_complete) ? Math.min(100, Math.max(0, trip.percent_complete)) : 0
+  const pct = pctValue.toFixed(0)
+  const hasTotalDistance = trip.total_distance_m > 0
+  const milesWalked = metersToMiles(trip.distance_walked_m || 0).toFixed(1)
+  const milesTotal = metersToMiles(trip.total_distance_m || 0).toFixed(1)
+  const isPaused = trip.status === 'paused'
+
+  function stop(handler: () => void) {
+    return (e: MouseEvent) => {
+      e.stopPropagation()
+      handler()
+    }
+  }
 
   return (
     <li className="trip-card" onClick={onOpen}>
-      <div className="trip-card-thumb">
-        <ThumbnailSvg routePoints={trip.thumbnail_route} />
-      </div>
+      <TripThumbButton routePoints={trip.thumbnail_route} onEditThumbnail={stop(onEditThumbnail)} />
       <div className="trip-card-body">
+        <TripNameRow displayName={displayName} onRename={onRename} />
         <div className="trip-card-top">
           <RouteLine trip={trip} />
           <span className="trip-card-pct">{pct}%</span>
@@ -106,8 +175,21 @@ export function ActiveTripCard({ trip, state, onOpen, onPauseResume, onDelete }:
           <span className="trip-card-progress-fill" style={{ width: `${pct}%` }} />
         </span>
         <div className="trip-card-meta">
-          <span className="trip-card-checkpoint">📍 {currentCheckpointLabel(state.checkpoints)}</span>
-          <span className="trip-card-steps">👣 {state.total_steps.toLocaleString()} steps</span>
+          {/* Distance covered / total route distance, same unit and one
+              decimal place as formatMiles()/TripDetailPage.tsx's own
+              distance stats - replaces the old "Not reached yet"
+              checkpoint-name placeholder with real progress (keeps the
+              .trip-card-checkpoint class so no CSS changes). Falls back
+              to just the distance walked when total_distance_m is
+              missing/zero, rather than showing a meaningless "/ 0.0 mi". */}
+          <span className="trip-card-checkpoint">
+            <IconRoute className="icon icon-sm" />
+            {hasTotalDistance ? `${milesWalked} / ${milesTotal} mi · ${pct}%` : `${milesWalked} mi`}
+          </span>
+          <span className="trip-card-steps">
+            <IconFootsteps className="icon icon-sm" />
+            {trip.total_steps.toLocaleString()} steps
+          </span>
         </div>
         {isPaused && <span className="trip-card-status is-paused">Paused</span>}
       </div>
@@ -116,10 +198,7 @@ export function ActiveTripCard({ trip, state, onOpen, onPauseResume, onDelete }:
           type="button"
           className="trip-card-action is-pause-resume"
           aria-label={isPaused ? 'Resume journey' : 'Pause journey'}
-          onClick={(e) => {
-            e.stopPropagation()
-            onPauseResume()
-          }}
+          onClick={stop(onPauseResume)}
         >
           {isPaused ? (
             <svg className="icon icon-sm" viewBox="0 0 24 24" fill="none">
@@ -132,12 +211,7 @@ export function ActiveTripCard({ trip, state, onOpen, onPauseResume, onDelete }:
             </svg>
           )}
         </button>
-        <DeleteButton
-          onClick={(e) => {
-            e.stopPropagation()
-            onDelete()
-          }}
-        />
+        <DeleteButton onClick={stop(onDelete)} />
       </div>
     </li>
   )
@@ -145,34 +219,38 @@ export function ActiveTripCard({ trip, state, onOpen, onPauseResume, onDelete }:
 
 interface CompletedTripCardProps {
   trip: TripSummary
+  displayName: string
   onOpen: () => void
   onDelete: () => void
+  onRename: (name: string) => void
+  onEditThumbnail: () => void
 }
 
 // Completed trips are still clickable (opens Trip Detail as a read-only
 // recap - see trip.js's own note that a finished journey has nothing
 // left to pause/resume), same as active ones.
-export function CompletedTripCard({ trip, onOpen, onDelete }: CompletedTripCardProps) {
+export function CompletedTripCard({ trip, displayName, onOpen, onDelete, onRename, onEditThumbnail }: CompletedTripCardProps) {
+  function stop(handler: () => void) {
+    return (e: MouseEvent) => {
+      e.stopPropagation()
+      handler()
+    }
+  }
+
   return (
     <li className="trip-card" onClick={onOpen}>
-      <div className="trip-card-thumb">
-        <ThumbnailSvg routePoints={trip.thumbnail_route} />
-      </div>
+      <TripThumbButton routePoints={trip.thumbnail_route} onEditThumbnail={stop(onEditThumbnail)} />
       <div className="trip-card-body">
+        <TripNameRow displayName={displayName} onRename={onRename} />
         <RouteLine trip={trip} />
         <div className="trip-card-stats">
           <span>
-            {miles(trip.total_distance_m)} · {formatDate(trip.started_at)}
+            {formatMiles(trip.total_distance_m)} · {formatDate(trip.started_at)}
           </span>
         </div>
       </div>
       <div className="trip-card-actions">
-        <DeleteButton
-          onClick={(e) => {
-            e.stopPropagation()
-            onDelete()
-          }}
-        />
+        <DeleteButton onClick={stop(onDelete)} />
       </div>
     </li>
   )

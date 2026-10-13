@@ -50,6 +50,14 @@ class User(Base):
     # account that later linked Google, see signup_or_login_google()).
     google_sub: Mapped[str | None] = mapped_column(String, unique=True, nullable=True)
 
+    # Vestigial: a brief Clerk-based-identity experiment (2026-10) that
+    # was reverted back to this file's own JWT login before shipping -
+    # unused by any code now, kept only because every existing row's
+    # value here is still null (nothing ever wrote to it in production)
+    # and dropping a column is a one-way migration this revert doesn't
+    # need to force through. Safe to drop in a later cleanup.
+    clerk_user_id: Mapped[str | None] = mapped_column(String, unique=True, nullable=True)
+
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -142,35 +150,6 @@ class OAuthState(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
-class SignupVerification(Base):
-    __tablename__ = "signup_verifications"
-
-    # A pending email/password signup, not yet a real user - the row
-    # accounts/router.py's POST /auth/signup/start creates and POST
-    # /auth/signup/verify redeems (see accounts/service.py's
-    # verify_email_signup()). email is the primary key, not a separate
-    # id: only one pending signup per address makes sense, and a fresh
-    # /start call for the same email (a resend) should replace it, not
-    # accumulate old codes next to new ones.
-    email: Mapped[str] = mapped_column(String, primary_key=True)
-
-    # Hashed with the same bcrypt helper as real account passwords
-    # (accounts/security.py's hash_password/verify_password) - the
-    # account itself isn't created until the code is verified, so the
-    # password has to live somewhere in the meantime, hashed like any
-    # other.
-    hashed_password: Mapped[str] = mapped_column(String, nullable=False)
-    code_hash: Mapped[str] = mapped_column(String, nullable=False)
-
-    # Wrong-code guesses against this row - verify_email_signup() deletes
-    # the row once this hits MAX_OTP_ATTEMPTS, forcing a fresh /start
-    # (and a fresh code) rather than allowing unlimited guessing.
-    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
-
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-
-
 class ActiveTrip(Base):
     __tablename__ = "active_trips"
 
@@ -235,6 +214,16 @@ class ActiveTrip(Base):
 
     round_trip: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
+    # Randomized once, at trip creation (travel_logic/checkpoints.py's
+    # generate_reveal_radius_m(), a uniform 50-100m draw), and never
+    # re-rolled afterward - every TripCheckpoint on this trip reveals
+    # itself (see TripCheckpoint.revealed_at) once the walker's
+    # distance_walked_m comes within this many meters of it, and stays
+    # revealed for the rest of the trip. server_default backfills every
+    # pre-existing trip to the range's midpoint rather than leaving it
+    # null, since nullable=False here means every trip has a real radius.
+    checkpoint_reveal_radius_m: Mapped[float] = mapped_column(Float, nullable=False, default=75.0, server_default="75")
+
     # When status is "paused", the moment that started - used, together
     # with total_paused_seconds below, to keep "elapsed_seconds" meaning
     # "time actually walking" rather than "wall-clock time since started_at"
@@ -248,16 +237,6 @@ class ActiveTrip(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
-
-    # Null the instant the trip is created (start_journey() returns before
-    # checkpoints exist at all now - see core/facade.py's
-    # generate_checkpoints_for_trip(), run as a FastAPI background task),
-    # set once that background job has finished discovering every
-    # checkpoint along the route. GET /api/journey/{id}/events (app.py)
-    # reads this to know whether a client connecting fresh (e.g. a page
-    # reload mid-generation) should still expect more checkpoint_added/
-    # checkpoint_updated events or just get the current list and close.
-    checkpoints_ready_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     user: Mapped["User"] = relationship(back_populates="trips")
     checkpoints: Mapped[list["TripCheckpoint"]] = relationship(
@@ -327,7 +306,9 @@ class TripCheckpoint(Base):
     __tablename__ = "trip_checkpoints"
 
     __table_args__ = (
-        CheckConstraint("description_status IN ('pending', 'ready')", name="ck_trip_checkpoints_description_status"),
+        CheckConstraint(
+            "metadata_status IN ('pending', 'processing', 'ready')", name="ck_trip_checkpoints_metadata_status"
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -335,25 +316,49 @@ class TripCheckpoint(Base):
         UUID(as_uuid=True), ForeignKey("active_trips.id", ondelete="CASCADE"), nullable=False
     )
 
+    # Every checkpoint's position for the whole route is generated and
+    # persisted up front, in one shot, at trip creation (travel_logic/
+    # checkpoints.py's generate_checkpoint_positions(), called from
+    # database/trips.py's create_trip()) - checkpoint_number/lat/lng/
+    # distance_from_start_m are all real from the instant this row exists
+    # and never change afterward. name/description start blank - see
+    # metadata_status below.
     checkpoint_number: Mapped[int] = mapped_column(Integer, nullable=False)
-    name: Mapped[str] = mapped_column(String, nullable=False)
+    name: Mapped[str] = mapped_column(String, nullable=False, default="")
     lat: Mapped[float] = mapped_column(Float, nullable=False)
     lng: Mapped[float] = mapped_column(Float, nullable=False)
     distance_from_start_m: Mapped[float] = mapped_column(Float, nullable=False)
     description: Mapped[str] = mapped_column(String, nullable=False, default="")
 
-    # "pending" the instant this row is written (generate_checkpoints_for_
-    # trip() persists a checkpoint the moment its city/coordinates are
-    # known, description="" - see travel_logic/checkpoints.py's
-    # generate_checkpoints_progressive()), flipped to "ready" once the AI
-    # description finishes (or falls back to plain text on a model/network
-    # failure - either way there's real text to show). Lets the map/UI
-    # show a checkpoint's pin right away with a "generating…" marker
-    # instead of waiting for every checkpoint's description to finish
-    # before any of them can appear.
-    description_status: Mapped[str] = mapped_column(
+    # "pending" the instant this row is written (name/description both
+    # still blank). A background job claims a checkpoint by flipping this
+    # to "processing" (database/trips.py's claim_checkpoint_for_metadata())
+    # right before resolving its real name/description, then "ready" once
+    # both are persisted (set_checkpoint_metadata()) - or back to
+    # "pending" on failure, so a later call retries it. core/facade.py
+    # only ever resolves metadata for checkpoints the walker is actually
+    # near (plus a small lookahead buffer), not every checkpoint at once -
+    # most of a long route's checkpoints sit "pending" for a long time,
+    # by design.
+    metadata_status: Mapped[str] = mapped_column(
         String, nullable=False, default="pending", server_default="pending"
     )
+    # Set the moment a job claims this checkpoint (see metadata_status
+    # above) - lets a later claim attempt tell a genuinely stuck
+    # "processing" row (its worker crashed or never ran) from one that's
+    # actively being worked on right now, and safely retry the former.
+    metadata_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # Null until the walker's distance_walked_m comes within the trip's
+    # own checkpoint_reveal_radius_m of this checkpoint; set once and
+    # never cleared after that - a checkpoint reveals itself a little
+    # before the walker actually reaches it (that's the whole point of
+    # the radius) and then stays visible on the map for the rest of the
+    # trip, however far ahead the walker gets. Deliberately independent
+    # of metadata_status: a checkpoint can be revealed before its name is
+    # known (the map shows it immediately; the label fills in once
+    # resolve_checkpoint_name() finishes) - see core/facade.py.
+    revealed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     # Null until the trip's meters_walked passes distance_from_start_m; set
     # once and never cleared after that. Same idea as

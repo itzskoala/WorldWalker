@@ -84,6 +84,16 @@ def test_create_trip_persists_the_trip_and_its_checkpoints(db_session):
     assert [c.name for c in trip.checkpoints] == ["Midway"]
     assert trip.checkpoints[0].hit_at is None
 
+    # Each stored point carries its own real, already-measured distance
+    # from the start (route.points[i].distance_from_start, straight off
+    # the Route this trip was created from) - core/facade.py's
+    # _route_from_geometry() reads this back to rebuild the Route on
+    # every later read without re-measuring every pair via haversine all
+    # over again. Losing this (storing just {lat, lng}) is exactly what
+    # made a long trip's /api/journey/state measurably slower than a
+    # short one's - see that function's own docstring.
+    assert [point["d"] for point in trip.route_geometry] == [0.0, TOTAL_DISTANCE_M]
+
 
 def test_create_trip_does_not_disturb_an_existing_active_trip(db_session):
     # A user can have several trips going at once now - starting a second
@@ -270,3 +280,221 @@ def test_complete_trip_flips_status_and_drops_out_of_get_active_trips(db_session
 
     assert trip.status == "completed"
     assert trips.get_active_trips(db_session, user_id) == []
+
+
+# --- create_trip: checkpoint positions + reveal radius generated up front ---
+
+def test_create_trip_generates_checkpoint_positions_when_none_are_given(db_session):
+    # No checkpoints=... at all - the real start_journey() path. Every
+    # position for the whole route is generated and persisted
+    # immediately, blank name/description, "pending" metadata.
+    user_id = _make_user(db_session)
+    trip = trips.create_trip(
+        session=db_session, user_id=user_id, from_place="A", to_place="B",
+        route=_route(), gender=None, stride_length_m=None, stride_by_type={}, round_trip=False,
+    )
+
+    assert len(trip.checkpoints) > 0
+    for checkpoint in trip.checkpoints:
+        assert checkpoint.name == ""
+        assert checkpoint.metadata_status == "pending"
+        assert checkpoint.revealed_at is None
+        assert 0 < checkpoint.distance_from_start_m < TOTAL_DISTANCE_M
+
+
+def test_create_trip_generates_a_reveal_radius_within_the_configured_range_when_none_is_given(db_session):
+    from travel_logic.checkpoints import CHECKPOINT_REVEAL_RADIUS_MIN_M, CHECKPOINT_REVEAL_RADIUS_MAX_M
+
+    user_id = _make_user(db_session)
+    trip = trips.create_trip(
+        session=db_session, user_id=user_id, from_place="A", to_place="B",
+        route=_route(), checkpoints=[], gender=None, stride_length_m=None, stride_by_type={}, round_trip=False,
+    )
+
+    assert CHECKPOINT_REVEAL_RADIUS_MIN_M <= trip.checkpoint_reveal_radius_m <= CHECKPOINT_REVEAL_RADIUS_MAX_M
+
+
+def test_create_trip_persists_an_explicit_reveal_radius_instead_of_generating_one(db_session):
+    user_id = _make_user(db_session)
+    trip = trips.create_trip(
+        session=db_session, user_id=user_id, from_place="A", to_place="B",
+        route=_route(), checkpoints=[], gender=None, stride_length_m=None, stride_by_type={}, round_trip=False,
+        checkpoint_reveal_radius_m=88.0,
+    )
+
+    assert trip.checkpoint_reveal_radius_m == 88.0
+
+
+def test_create_trip_persists_the_same_radius_on_reload_not_a_fresh_random_one(db_session):
+    # Simulates a refresh/reconnect: re-reading the same trip must never
+    # see a different radius than what was generated at creation.
+    user_id = _make_user(db_session)
+    trip = trips.create_trip(
+        session=db_session, user_id=user_id, from_place="A", to_place="B",
+        route=_route(), checkpoints=[], gender=None, stride_length_m=None, stride_by_type={}, round_trip=False,
+    )
+    original_radius = trip.checkpoint_reveal_radius_m
+
+    reloaded = trips.get_trip(db_session, trip.id, user_id)
+
+    assert reloaded.checkpoint_reveal_radius_m == original_radius
+
+
+# --- mark_checkpoints_revealed: proximity-based discovery ---
+
+def test_mark_checkpoints_revealed_only_reveals_checkpoints_within_the_radius(db_session):
+    user_id = _make_user(db_session)
+    trip = trips.create_trip(
+        session=db_session, user_id=user_id, from_place="A", to_place="B",
+        route=_route(),
+        checkpoints=[_checkpoint("Near", 1_000.0, checkpoint_number=1), _checkpoint("Far", 9_000.0, checkpoint_number=2)],
+        gender=None, stride_length_m=None, stride_by_type={}, round_trip=False,
+        checkpoint_reveal_radius_m=75.0,
+    )
+
+    # Walking to 950m puts "Near" (at 1000m) within the 75m radius but
+    # leaves "Far" (at 9000m) well outside it.
+    newly_revealed = trips.mark_checkpoints_revealed(db_session, trip, distance_walked_m=950.0)
+
+    assert [c.name for c in newly_revealed] == ["Near"]
+    near, far = trip.checkpoints
+    assert near.revealed_at is not None
+    assert far.revealed_at is None
+
+
+def test_mark_checkpoints_revealed_stays_revealed_once_set_even_after_walking_past_it(db_session):
+    user_id = _make_user(db_session)
+    trip = trips.create_trip(
+        session=db_session, user_id=user_id, from_place="A", to_place="B",
+        route=_route(), checkpoints=[_checkpoint("Near", 1_000.0, checkpoint_number=1)],
+        gender=None, stride_length_m=None, stride_by_type={}, round_trip=False,
+        checkpoint_reveal_radius_m=75.0,
+    )
+
+    trips.mark_checkpoints_revealed(db_session, trip, distance_walked_m=950.0)
+    first_revealed_at = trip.checkpoints[0].revealed_at
+    assert first_revealed_at is not None
+
+    # Walking far past it doesn't re-reveal (and the timestamp doesn't move).
+    again = trips.mark_checkpoints_revealed(db_session, trip, distance_walked_m=9_000.0)
+
+    assert again == []
+    assert trip.checkpoints[0].revealed_at == first_revealed_at
+
+
+def test_mark_checkpoints_revealed_only_returns_the_newly_revealed_ones_each_call(db_session):
+    user_id = _make_user(db_session)
+    trip = trips.create_trip(
+        session=db_session, user_id=user_id, from_place="A", to_place="B",
+        route=_route(),
+        checkpoints=[_checkpoint("Near", 2_000.0, checkpoint_number=1), _checkpoint("Far", 8_000.0, checkpoint_number=2)],
+        gender=None, stride_length_m=None, stride_by_type={}, round_trip=False,
+        checkpoint_reveal_radius_m=75.0,
+    )
+
+    revealed_at_1950m = trips.mark_checkpoints_revealed(db_session, trip, distance_walked_m=1_950.0)
+    assert [c.name for c in revealed_at_1950m] == ["Near"]
+
+    revealed_at_7950m = trips.mark_checkpoints_revealed(db_session, trip, distance_walked_m=7_950.0)
+    assert [c.name for c in revealed_at_7950m] == ["Far"]
+
+    still_revealed = trips.mark_checkpoints_revealed(db_session, trip, distance_walked_m=7_950.0)
+    assert still_revealed == []
+
+
+# --- checkpoint metadata claim/release/set ---
+
+def test_claim_checkpoint_for_metadata_wins_once_and_blocks_a_second_concurrent_claim(db_session):
+    user_id = _make_user(db_session)
+    trip = trips.create_trip(
+        session=db_session, user_id=user_id, from_place="A", to_place="B",
+        route=_route(), checkpoints=[], gender=None, stride_length_m=None, stride_by_type={}, round_trip=False,
+    )
+    checkpoint = TripCheckpoint(trip_id=trip.id, checkpoint_number=1, name="", lat=0.0, lng=0.0, distance_from_start_m=1000.0)
+    db_session.add(checkpoint)
+    db_session.commit()
+
+    first_claim = trips.claim_checkpoint_for_metadata(db_session, checkpoint.id)
+    second_claim = trips.claim_checkpoint_for_metadata(db_session, checkpoint.id)
+
+    assert first_claim is True
+    assert second_claim is False  # already "processing" from the first claim, and not stale yet
+    db_session.refresh(checkpoint)
+    assert checkpoint.metadata_status == "processing"
+
+
+def test_claim_checkpoint_for_metadata_never_reclaims_an_already_ready_checkpoint(db_session):
+    user_id = _make_user(db_session)
+    trip = trips.create_trip(
+        session=db_session, user_id=user_id, from_place="A", to_place="B",
+        route=_route(), checkpoints=[], gender=None, stride_length_m=None, stride_by_type={}, round_trip=False,
+    )
+    checkpoint = TripCheckpoint(
+        trip_id=trip.id, checkpoint_number=1, name="Chicago", lat=0.0, lng=0.0,
+        distance_from_start_m=1000.0, metadata_status="ready",
+    )
+    db_session.add(checkpoint)
+    db_session.commit()
+
+    assert trips.claim_checkpoint_for_metadata(db_session, checkpoint.id) is False
+
+
+def test_claim_checkpoint_for_metadata_reclaims_a_stale_processing_checkpoint(db_session, monkeypatch):
+    user_id = _make_user(db_session)
+    trip = trips.create_trip(
+        session=db_session, user_id=user_id, from_place="A", to_place="B",
+        route=_route(), checkpoints=[], gender=None, stride_length_m=None, stride_by_type={}, round_trip=False,
+    )
+    checkpoint = TripCheckpoint(
+        trip_id=trip.id, checkpoint_number=1, name="", lat=0.0, lng=0.0, distance_from_start_m=1000.0,
+        metadata_status="processing", metadata_requested_at=datetime.now(timezone.utc) - timedelta(minutes=10),
+    )
+    db_session.add(checkpoint)
+    db_session.commit()
+
+    # A claim this old is presumed dead (its worker crashed, or the
+    # process restarted mid-job) - safe to retry rather than stuck
+    # "processing" forever.
+    assert trips.claim_checkpoint_for_metadata(db_session, checkpoint.id) is True
+
+
+def test_release_checkpoint_metadata_claim_puts_it_back_to_pending(db_session):
+    user_id = _make_user(db_session)
+    trip = trips.create_trip(
+        session=db_session, user_id=user_id, from_place="A", to_place="B",
+        route=_route(), checkpoints=[], gender=None, stride_length_m=None, stride_by_type={}, round_trip=False,
+    )
+    checkpoint = TripCheckpoint(
+        trip_id=trip.id, checkpoint_number=1, name="", lat=0.0, lng=0.0, distance_from_start_m=1000.0,
+        metadata_status="processing", metadata_requested_at=datetime.now(timezone.utc),
+    )
+    db_session.add(checkpoint)
+    db_session.commit()
+
+    trips.release_checkpoint_metadata_claim(db_session, checkpoint.id)
+
+    db_session.refresh(checkpoint)
+    assert checkpoint.metadata_status == "pending"
+    assert checkpoint.metadata_requested_at is None
+    # A later call can claim it again - the retry this release exists for.
+    assert trips.claim_checkpoint_for_metadata(db_session, checkpoint.id) is True
+
+
+def test_set_checkpoint_metadata_fills_in_name_and_description_and_flips_to_ready(db_session):
+    user_id = _make_user(db_session)
+    trip = trips.create_trip(
+        session=db_session, user_id=user_id, from_place="A", to_place="B",
+        route=_route(), checkpoints=[], gender=None, stride_length_m=None, stride_by_type={}, round_trip=False,
+    )
+    checkpoint = TripCheckpoint(
+        trip_id=trip.id, checkpoint_number=1, name="", lat=0.0, lng=0.0, distance_from_start_m=1000.0,
+        metadata_status="processing",
+    )
+    db_session.add(checkpoint)
+    db_session.commit()
+
+    row = trips.set_checkpoint_metadata(db_session, checkpoint.id, "Chicago", "A real fun fact.")
+
+    assert row.name == "Chicago"
+    assert row.description == "A real fun fact."
+    assert row.metadata_status == "ready"

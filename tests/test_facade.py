@@ -83,6 +83,66 @@ def facade(patched_session, user_id, seed_trip) -> TravelFacade:
     return f
 
 
+# ---------- _route_from_geometry() - the fast (persisted "d") vs. slow (haversine) paths ----------
+# seed_trip() above (and every test using it) stores route_geometry
+# without "d" - the legacy/fallback shape - so the rest of this file
+# already exercises build_route()'s own slow path on every read. These
+# two tests cover the new persisted-distance fast path directly: that it
+# produces the exact same Route a fresh haversine rebuild would (not an
+# approximation of one), and that create_trip()/get_map_state() actually
+# wire it up end to end.
+
+def test_route_from_geometry_fast_path_matches_the_slow_path():
+    from core.facade import _route_from_geometry
+
+    geometry = [{"lat": 44.9 + i * 0.001, "lng": -93.2 + i * 0.001} for i in range(50)]
+    slow_route = _route_from_geometry(geometry)  # no "d" key anywhere -> build_route() fallback
+
+    with_distances = [
+        {**point, "d": slow_route.points[i].distance_from_start} for i, point in enumerate(geometry)
+    ]
+    fast_route = _route_from_geometry(with_distances)  # every point has "d" -> the fast path
+
+    assert fast_route.total_distance == slow_route.total_distance
+    assert fast_route.point_count == slow_route.point_count
+    for fast_point, slow_point in zip(fast_route.points, slow_route.points):
+        assert fast_point.coords == slow_point.coords
+        assert fast_point.distance_from_start == slow_point.distance_from_start
+        assert fast_point.distance_to_destination == pytest.approx(slow_point.distance_to_destination)
+        assert fast_point.distance_to_previous == pytest.approx(slow_point.distance_to_previous)
+        assert fast_point.distance_to_next == pytest.approx(slow_point.distance_to_next)
+
+
+def test_get_map_state_uses_persisted_distances_and_never_leaks_them_to_the_client(patched_session, user_id):
+    # Unlike the `facade` fixture above, this seeds through the real
+    # trips.create_trip() (not seed_trip()'s hand-built legacy row), so
+    # route_geometry actually carries "d" the way a real trip does now.
+    route = _route(TOTAL_DISTANCE_M)
+    trip = trips.create_trip(
+        session=patched_session,
+        user_id=user_id,
+        from_place="Miami, Florida",
+        to_place="Chicago, Illinois",
+        route=route,
+        checkpoints=[],
+        gender=None,
+        stride_length_m=None,
+        stride_by_type={},
+        round_trip=False,
+    )
+    trips.add_progress(patched_session, trip, TOTAL_DISTANCE_M / 2)
+
+    state = TravelFacade().get_map_state(user_id, trip.id)
+
+    assert state["distance_walked_m"] == pytest.approx(TOTAL_DISTANCE_M / 2)
+    assert state["percent_complete"] == pytest.approx(50.0)
+    # The persisted "d" bookkeeping field is an internal storage detail
+    # (see core/facade.py's _route_geometry_latlng()) - sending it back to
+    # the client would just re-grow the same payload this exists to
+    # shrink, for a field the frontend never reads.
+    assert all(set(point.keys()) == {"lat", "lng"} for point in state["route_geometry"])
+
+
 def test_record_workout_adds_measured_distance_and_does_not_touch_stride_by_type(facade, user_id, patched_session):
     # A real per-user stride (as if seeded from Google Health's profile at
     # start_journey) must survive a workout untouched - no calibration
@@ -304,6 +364,34 @@ def test_start_journey_falls_back_cleanly_with_no_connection(patched_session, us
     assert trip.stride_length_m is None
 
 
+def test_start_journey_skips_geocoding_when_coordinates_are_already_known(patched_session, user_id, monkeypatch):
+    # The Chile Chico fix: when the caller (app.py, via data/intake.py)
+    # already has real coordinates for from_place/to_place - the normal
+    # case, since CreatePage.tsx's autocomplete always resolves a
+    # selection before Start Walking is even clickable - start_journey()
+    # must use them directly instead of re-geocoding the free-text label,
+    # which can fail for a label an exact-match /search can't resolve
+    # (e.g. an airport's "Chile Chico Airport (CCH), Chile Chico, CL").
+    f = TravelFacade()
+
+    def _explode(place):
+        raise ValueError(f"No match for '{place}'")
+    monkeypatch.setattr(f._geocoder, "geocode", _explode)
+    monkeypatch.setattr(f._router, "get_walking_route", lambda start, end: _route(10.0))
+    monkeypatch.setattr("core.facade.get_profile", lambda user_id: {})
+
+    f.start_journey(
+        user_id,
+        "Chile Chico Airport (CCH), Chile Chico, CL",
+        "Santiago, Chile",
+        from_coords=Coordinates(-46.5406, -71.7233),
+        to_coords=Coordinates(-33.4489, -70.6693),
+    )
+
+    trip = _the_active_trip(patched_session, user_id)
+    assert trip is not None
+
+
 def test_search_places_delegates_to_the_geocoder(facade, monkeypatch):
     monkeypatch.setattr(facade._geocoder, "search_places", lambda query, limit=5: [f"{query} match"])
     assert facade.search_places("ariz") == ["ariz match"]
@@ -335,3 +423,213 @@ def test_finished_event_includes_destination_and_total_steps(facade, user_id, pa
     with pytest.raises(ValueError):
         facade.record_steps(user_id, 50, interval)
     assert listener.received == ["🏆 You reached Chicago, Illinois in 100 steps! Congrats!"]
+
+
+# --- lazy checkpoint-metadata pipeline: bootstrap, proximity lookahead, duplicate-job prevention, retries ---
+
+class _SynchronousExecutor:
+    """Stands in for core.facade's shared, process-wide
+    _checkpoint_metadata_executor: .submit(fn, *args) runs fn immediately,
+    in the calling thread, instead of handing it to a real background
+    thread pool - so these tests can assert on the result deterministically,
+    with no real threading/timing and no risk of a background job
+    outliving the test."""
+
+    def submit(self, fn, *args):
+        fn(*args)
+
+
+class _FakeMetadataGeocoder:
+    def __init__(self, name_by_coords):
+        self._name_by_coords = name_by_coords
+        self.calls = []
+
+    def geocode(self, place):
+        return Coordinates(0.0, 0.0)
+
+    def reverse_geocode_city(self, coords):
+        self.calls.append(coords)
+        return self._name_by_coords.get((coords.lat, coords.lng))
+
+    def reverse_geocode(self, coords):
+        return self._name_by_coords.get((coords.lat, coords.lng), "Unknown")
+
+
+class _FakeMetadataDescriber:
+    def __init__(self, raises=False):
+        self.raises = raises
+        self.calls = 0
+
+    def generate(self, prompt):
+        self.calls += 1
+        if self.raises:
+            raise RuntimeError("model is down")
+        return "A lovely little stop."
+
+
+def _facade_with_synchronous_metadata_pipeline(monkeypatch, geocoder=None, describer=None) -> TravelFacade:
+    """Always swaps in fakes for both the geocoder and the describer -
+    even a test that doesn't care about their output must never fall
+    through to the real NominatimGeocoder/AIDescriptionGenerator, since
+    the synchronous executor below means any checkpoint-metadata
+    resolution these tests trigger runs for real, inline, immediately -
+    not off on a background thread a real test would never wait for."""
+    f = TravelFacade()
+    monkeypatch.setattr("core.facade._checkpoint_metadata_executor", _SynchronousExecutor())
+    f._geocoder = geocoder if geocoder is not None else _FakeMetadataGeocoder({(0.0, 0.0): "Somewhere"})
+    f._describer = describer if describer is not None else _FakeMetadataDescriber()
+    return f
+
+
+def test_bootstrap_checkpoint_metadata_resolves_only_the_initial_batch(patched_session, user_id, monkeypatch):
+    from core.facade import INITIAL_METADATA_BATCH
+
+    f = _facade_with_synchronous_metadata_pipeline(
+        monkeypatch, geocoder=_FakeMetadataGeocoder({(0.0, 0.0): "Somewhere"}), describer=_FakeMetadataDescriber(),
+    )
+    monkeypatch.setattr(f._geocoder, "reverse_geocode_city", lambda coords: "Somewhere")
+    monkeypatch.setattr(f._router, "get_walking_route", lambda start, end: _route(50_000.0))
+    monkeypatch.setattr("core.facade.get_profile", lambda user_id: {})
+    state = f.start_journey(user_id, "A", "B")
+
+    trip = _the_active_trip(patched_session, user_id)
+    assert len(trip.checkpoints) > INITIAL_METADATA_BATCH  # a long enough route to prove the batch is partial
+
+    f.bootstrap_checkpoint_metadata(trip.id)
+
+    patched_session.refresh(trip)
+    resolved = [c for c in trip.checkpoints if c.metadata_status == "ready"]
+    still_pending = [c for c in trip.checkpoints if c.metadata_status == "pending"]
+    assert [c.checkpoint_number for c in resolved] == list(range(1, INITIAL_METADATA_BATCH + 1))
+    assert all(c.checkpoint_number > INITIAL_METADATA_BATCH for c in still_pending)
+    assert all(c.name == "Somewhere" for c in resolved)
+
+
+def test_proximity_reveal_resolves_metadata_for_a_lookahead_buffer_beyond_it(patched_session, user_id, monkeypatch):
+    from core.facade import METADATA_LOOKAHEAD
+
+    f = _facade_with_synchronous_metadata_pipeline(monkeypatch)
+    monkeypatch.setattr(f._geocoder, "reverse_geocode_city", lambda coords: "Somewhere")
+    monkeypatch.setattr(f._router, "get_walking_route", lambda start, end: _route(2_000_000.0))  # long - many checkpoints
+    monkeypatch.setattr("core.facade.get_profile", lambda user_id: {})
+    f.start_journey(user_id, "A", "B")
+    trip = _the_active_trip(patched_session, user_id)
+
+    # Reveal everything up through roughly the middle of the route - the
+    # lookahead should then resolve METADATA_LOOKAHEAD checkpoints beyond
+    # whichever one that reveals, not the whole rest of the route.
+    midpoint_checkpoint = trip.checkpoints[len(trip.checkpoints) // 2]
+    trips.mark_checkpoints_revealed(patched_session, trip, midpoint_checkpoint.distance_from_start_m)
+    furthest_revealed_number = max(c.checkpoint_number for c in trip.checkpoints if c.revealed_at is not None)
+
+    f._ensure_checkpoint_metadata(patched_session, trip, up_to_checkpoint_number=furthest_revealed_number + METADATA_LOOKAHEAD)
+
+    patched_session.refresh(trip)
+    resolved_numbers = {c.checkpoint_number for c in trip.checkpoints if c.metadata_status == "ready"}
+    assert resolved_numbers == set(range(1, furthest_revealed_number + METADATA_LOOKAHEAD + 1)) & {
+        c.checkpoint_number for c in trip.checkpoints
+    }
+    # Well beyond the lookahead buffer, nothing was touched.
+    assert all(
+        c.metadata_status == "pending"
+        for c in trip.checkpoints
+        if c.checkpoint_number > furthest_revealed_number + METADATA_LOOKAHEAD
+    )
+
+
+def test_ensure_checkpoint_metadata_is_safe_to_call_twice_for_the_same_checkpoint(patched_session, user_id, monkeypatch):
+    # Simulates a refresh/reconnect: the same checkpoint range gets
+    # re-requested while (or after) it was already resolved - must never
+    # double-resolve or raise.
+    geocoder = _FakeMetadataGeocoder({(0.0, 0.0): "Somewhere"})
+    describer = _FakeMetadataDescriber()
+    f = _facade_with_synchronous_metadata_pipeline(monkeypatch, geocoder=geocoder, describer=describer)
+    monkeypatch.setattr(f._router, "get_walking_route", lambda start, end: _route(2_000.0))
+    monkeypatch.setattr("core.facade.get_profile", lambda user_id: {})
+    f.start_journey(user_id, "A", "B")
+    trip = _the_active_trip(patched_session, user_id)
+
+    f._ensure_checkpoint_metadata(patched_session, trip, up_to_checkpoint_number=1)
+    f._ensure_checkpoint_metadata(patched_session, trip, up_to_checkpoint_number=1)
+
+    patched_session.refresh(trip)
+    assert trip.checkpoints[0].metadata_status == "ready"
+    assert describer.calls == 1  # resolved exactly once, not twice
+
+
+def test_resolve_checkpoint_metadata_failure_releases_the_claim_for_a_later_retry(patched_session, user_id, monkeypatch):
+    geocoder = _FakeMetadataGeocoder({(0.0, 0.0): "Somewhere"})
+    failing_describer = _FakeMetadataDescriber(raises=False)  # description falls back gracefully on its own
+
+    def _explode(coords):
+        raise RuntimeError("Nominatim is down")
+    f = _facade_with_synchronous_metadata_pipeline(monkeypatch, geocoder=geocoder, describer=failing_describer)
+    monkeypatch.setattr(f._geocoder, "reverse_geocode_city", _explode)
+    monkeypatch.setattr(f._router, "get_walking_route", lambda start, end: _route(2_000.0))
+    monkeypatch.setattr("core.facade.get_profile", lambda user_id: {})
+    f.start_journey(user_id, "A", "B")
+    trip = _the_active_trip(patched_session, user_id)
+
+    f._ensure_checkpoint_metadata(patched_session, trip, up_to_checkpoint_number=1)
+    patched_session.refresh(trip)
+    assert trip.checkpoints[0].metadata_status == "pending"  # released, not stuck "processing"
+
+    # Fix the geocoder and retry - the exact same call now succeeds.
+    monkeypatch.setattr(f._geocoder, "reverse_geocode_city", lambda coords: "Somewhere")
+    f._ensure_checkpoint_metadata(patched_session, trip, up_to_checkpoint_number=1)
+    patched_session.refresh(trip)
+    assert trip.checkpoints[0].metadata_status == "ready"
+    assert trip.checkpoints[0].name == "Somewhere"
+
+
+def test_reveal_fires_a_checkpoint_updated_event_independent_of_metadata_status(patched_session, user_id, monkeypatch):
+    f = _facade_with_synchronous_metadata_pipeline(monkeypatch)
+    # 2km route -> exactly one checkpoint, at its midpoint (1000m) - far
+    # enough from the start that it's NOT revealed yet when the trip is
+    # created (unlike a route short enough to fall inside the reveal
+    # radius immediately).
+    monkeypatch.setattr(f._router, "get_walking_route", lambda start, end: _route(2_000.0))
+    monkeypatch.setattr("core.facade.get_profile", lambda user_id: {})
+    f.start_journey(user_id, "A", "B")
+    trip = _the_active_trip(patched_session, user_id)
+    assert trip.checkpoints[0].revealed_at is None
+
+    listener = _RecordingListener()
+    f.events.subscribe(f"trip_checkpoints:{trip.id}", listener)
+
+    # Walk to within the trip's reveal radius (minimum 50m, so 50m short
+    # of the checkpoint always qualifies) - its metadata is still blank/
+    # "pending" at this point; the reveal event must fire anyway.
+    trip.meters_walked = 950.0
+    patched_session.commit()
+    f._notify_progress(patched_session, trip)
+
+    # The reveal event fires for a checkpoint whose metadata work has
+    # only just been kicked off (and, with this test's synchronous
+    # executor, already finished by the time the reveal loop runs - a
+    # real, asynchronous resolution wouldn't beat the reveal event, but
+    # either order is fine: reveal and metadata-ready are independent
+    # signals, and every checkpoint_updated event fired here reports
+    # revealed=True regardless of which triggered it).
+    reveal_events = [m for m in listener.received if m["type"] == "checkpoint_updated"]
+    assert len(reveal_events) >= 1
+    assert all(e["checkpoint"]["revealed"] is True for e in reveal_events)
+
+
+def test_finished_milestone_fires_the_trip_checkpoints_ready_terminal_event(facade, user_id, patched_session):
+    trip = _the_active_trip(patched_session, user_id)
+    trip.meters_walked = 99.999 * METERS_PER_MILE
+    patched_session.commit()
+
+    listener = _RecordingListener()
+    facade.events.subscribe(f"trip_checkpoints:{trip.id}", listener)
+
+    interval = TimeInterval(startTime="2026-09-08T09:00:00Z", endTime="2026-09-08T09:30:00Z")
+    facade.record_steps(user_id, 100, interval)
+
+    # The real "no more checkpoint events are coming" signal GET
+    # /api/journey/{id}/events's live loop (app.py) closes the stream on -
+    # repurposed from "checkpoint discovery finished" to "trip finished",
+    # now that metadata/reveal events can arrive for an active trip's
+    # whole duration.
+    assert {"type": "checkpoints_ready"} in listener.received
