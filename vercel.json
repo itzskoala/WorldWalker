@@ -16,6 +16,7 @@
     { "src": "/notifications/(.*)", "dest": "app.py" },
     { "src": "/assets/(.*)", "dest": "/frontend/assets/$1" },
     { "src": "/images/(.*)", "dest": "/frontend/images/$1" },
+    { "src": "/hero/(.*)", "dest": "/frontend/hero/$1" },
     { "src": "/(.*)", "dest": "/frontend/index.html" }
   ]
 }
