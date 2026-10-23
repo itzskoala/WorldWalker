@@ -7,7 +7,7 @@ import uuid
 
 from data.intake import IntakeRequest, start_journey_from_intake
 from data import intake as intake_module
-from travel_logic.coordinates import Coordinates
+from travel_logic.dataclasses.coordinates import Coordinates
 
 A_USER_ID = uuid.uuid4()
 

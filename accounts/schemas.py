@@ -18,20 +18,6 @@ class SignupRequest(BaseModel):
     password: str
 
 
-# TODO(otp): SignupStartRequest/SignupVerifyRequest backed the two-step
-# email-a-code signup flow, disabled for now in accounts/router.py and
-# accounts/service.py in favor of direct signup (SignupRequest above).
-# Revive these alongside that flow when it comes back.
-# class SignupStartRequest(BaseModel):
-#     email: str
-#     password: str
-#
-#
-# class SignupVerifyRequest(BaseModel):
-#     email: str
-#     code: str
-
-
 class GoogleAuthRequest(BaseModel):
     # The GIS credential is a signed JWT, not a raw email/password -
     # accounts/google_oauth.py verifies it before anything trusts the
@@ -49,3 +35,19 @@ class UserOut(BaseModel):
     email: str
     is_active: bool
     created_at: str
+    username: str | None = None
+    f_name: str | None = None
+    l_name: str | None = None
+    profile_photo: str | None = None
+    bio: str | None = None
+    lifetime_steps: int
+    postcards_sum: int
+    member_since: str
+
+
+class ProfileUpdateRequest(BaseModel):
+    username: str | None = None
+    f_name: str | None = None
+    l_name: str | None = None
+    bio: str | None = None
+    profile_photo: str | None = None

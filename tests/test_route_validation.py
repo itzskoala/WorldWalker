@@ -17,7 +17,7 @@
 import pytest
 import requests
 
-from travel_logic.coordinates import Coordinates
+from travel_logic.dataclasses.coordinates import Coordinates
 from travel_logic.route_validation import (
     MIN_WALKING_ROUTE_METERS,
     RouteUnavailable,

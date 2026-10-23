@@ -8,6 +8,8 @@ import type { AccessTokenResponse, User } from '../types/user'
 import { setToken } from '../auth/tokenStore'
 import { apiFetch, jsonHeaders, parseErrorMessage } from './httpClient'
 
+export type UsernameValidation = { valid: true; reason: null } | { valid: false; reason: 'format' | 'taken' }
+
 async function postJson<T>(path: string, body: unknown, fallbackError: string): Promise<T> {
   const res = await fetch(path, {
     method: 'POST',
@@ -69,6 +71,22 @@ export async function validateEmail(email: string): Promise<boolean> {
   }
 }
 
+/** ProfileUsernameField.tsx's real-time check - authenticated (unlike
+ * validateEmail above, there's no signed-in user yet at signup) so a
+ * user's own current username never reports itself as taken. Fails open
+ * (valid) on a network/server hiccup, same reasoning as validateEmail:
+ * accounts/service.py's update_username() reruns the same two checks
+ * server-side on submit regardless. */
+export async function validateUsername(username: string): Promise<UsernameValidation> {
+  try {
+    const res = await apiFetch(`/auth/validate-username?username=${encodeURIComponent(username)}`)
+    if (!res.ok) return { valid: true, reason: null }
+    return (await res.json()) as UsernameValidation
+  } catch {
+    return { valid: true, reason: null }
+  }
+}
+
 export function login(email: string, password: string, rememberMe: boolean): Promise<AccessTokenResponse> {
   return postForToken('/auth/login', { email, password, remember_me: rememberMe }, 'Incorrect email or password.')
 }
@@ -91,5 +109,23 @@ export async function logout(): Promise<void> {
 export async function fetchMe(): Promise<User> {
   const res = await apiFetch('/auth/me')
   if (!res.ok) throw new Error("Couldn't load your account.")
+  return res.json() as Promise<User>
+}
+
+export interface ProfileUpdate {
+  username?: string
+  f_name?: string
+  l_name?: string
+  bio?: string
+  profile_photo?: string
+}
+
+export async function updateProfile(fields: ProfileUpdate): Promise<User> {
+  const res = await apiFetch('/auth/me', {
+    method: 'PATCH',
+    headers: jsonHeaders(),
+    body: JSON.stringify(fields),
+  })
+  if (!res.ok) throw new Error(await parseErrorMessage(res, "Couldn't update your profile — try again."))
   return res.json() as Promise<User>
 }

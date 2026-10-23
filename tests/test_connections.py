@@ -18,6 +18,8 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
+from cryptography.fernet import Fernet
+from sqlalchemy import text
 
 from auth import connections
 from database.models import GoogleHealthConnection, User
@@ -142,6 +144,63 @@ def test_get_active_connection_cannot_see_another_users_connection(db_session, m
 
     with pytest.raises(RuntimeError):
         connections.get_active_connection(db_session, user_b.id)
+
+
+def test_get_active_connection_treats_undecryptable_tokens_as_no_connection(db_session, monkeypatch):
+    """Reproduces the production incident: a row encrypted under a
+    previous deployment's TOKEN_ENCRYPTION_KEY reads back with
+    access_token/refresh_token as None (database/encryption.py's
+    EncryptedString now fails soft instead of raising). Before this fix,
+    get_active_connection returned that broken row as if it were usable -
+    get_valid_access_token would have handed Google a None access token.
+    It must instead behave exactly like "never connected"."""
+    user = _new_user(db_session)
+    monkeypatch.setattr(connections, "get_health_user_id", lambda access_token: "stale-key-google-id")
+    connections.upsert_connection_from_tokens(db_session, user.id, FAKE_TOKENS)
+
+    other_key_ciphertext = Fernet(Fernet.generate_key()).encrypt(b"undecryptable").decode()
+    db_session.execute(
+        text(
+            "UPDATE google_health_connections SET access_token = :c, refresh_token = :c "
+            "WHERE user_id = :user_id"
+        ),
+        {"c": other_key_ciphertext, "user_id": user.id},
+    )
+    db_session.commit()
+    db_session.expire_all()
+
+    with pytest.raises(RuntimeError):
+        connections.get_active_connection(db_session, user.id)
+
+
+def test_reconnecting_over_an_undecryptable_row_succeeds(db_session, monkeypatch):
+    """The other half of the same incident: upsert_connection_from_tokens
+    (the reconnect path, hit by the OAuth callback) looks up the
+    existing row by user_id *before* overwriting it - before this fix,
+    that lookup itself crashed with the same decrypt error, so a user
+    whose stored tokens went stale could never even reconnect, only ever
+    hit the generic 500."""
+    user = _new_user(db_session)
+    monkeypatch.setattr(connections, "get_health_user_id", lambda access_token: "stale-key-google-id")
+    connections.upsert_connection_from_tokens(db_session, user.id, FAKE_TOKENS)
+
+    other_key_ciphertext = Fernet(Fernet.generate_key()).encrypt(b"undecryptable").decode()
+    db_session.execute(
+        text(
+            "UPDATE google_health_connections SET access_token = :c, refresh_token = :c "
+            "WHERE user_id = :user_id"
+        ),
+        {"c": other_key_ciphertext, "user_id": user.id},
+    )
+    db_session.commit()
+    db_session.expire_all()
+
+    reconnected = connections.upsert_connection_from_tokens(db_session, user.id, FAKE_TOKENS)
+
+    assert reconnected.access_token == FAKE_TOKENS["access_token"]
+    assert reconnected.refresh_token == FAKE_TOKENS["refresh_token"]
+    found = connections.get_active_connection(db_session, user.id)
+    assert found.id == reconnected.id
 
 
 def test_multiple_users_have_independent_connections(db_session, monkeypatch):

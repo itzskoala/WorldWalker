@@ -1,52 +1,60 @@
-// The signed-out header (landing + auth pages) - logo left, Explore/How
-// It Works center, Log In/Sign Up right. The two nav links point at
-// LandingPage.tsx's own sections (#explore, #how-it-works): a plain
-// anchor when already on the landing page (native smooth scroll - see
-// styles/style.css's `scroll-behavior: smooth`), or a router Link back
-// to "/" with that hash when on /login or /signup instead - LandingPage
-// itself scrolls to the hash on mount for that second case.
+// The header shared by every signed-out-reachable page: the landing page,
+// /login, /signup, and the Explore/About Us/Pricing placeholders
+// (PlaceholderPage.tsx). Logo left; everything else - Explore/About Us/
+// Pricing, then Sign in/Sign up (or the user's own avatar when a session
+// exists) - grouped together on the far right, each a real route (not an
+// in-page anchor). This header can render while signed in too, since
+// someone can still reach /login or one of the placeholder pages
+// directly by URL without RequireAuth (App.tsx) ever stepping in.
 
-import { Link, useLocation } from 'react-router-dom'
-import { IconFootprintMark } from './icons'
+import { Link, NavLink } from 'react-router-dom'
+import { useAuth } from '../auth/AuthContext'
 
 const NAV_LINKS = [
-  { label: 'Explore', hash: '#explore' },
-  { label: 'How It Works', hash: '#how-it-works' },
+  { label: 'Explore', to: '/explore' },
+  { label: 'About Us', to: '/about' },
+  { label: 'Pricing', to: '/pricing' },
 ]
 
 export function MarketingHeader() {
-  const { pathname } = useLocation()
-  const onLandingPage = pathname === '/'
-  const onAuthPage = pathname === '/login' || pathname === '/signup'
+  const { status, user } = useAuth()
+  const signedIn = status === 'authenticated' && user
 
   return (
     <header className="topbar marketing-header">
       <Link to="/" className="brand">
-        <IconFootprintMark className="brand-mark" />
         <span className="brand-name">WorldWalker</span>
       </Link>
 
-      <nav className="marketing-nav">
-        {NAV_LINKS.map(({ label, hash }) =>
-          onLandingPage ? (
-            <a key={label} href={hash} className="marketing-nav-link">
+      <div className="marketing-header-right">
+        <nav className="marketing-nav">
+          {NAV_LINKS.map(({ label, to }) => (
+            <NavLink key={label} to={to} className={({ isActive }) => `marketing-nav-link${isActive ? ' is-active' : ''}`}>
               {label}
-            </a>
-          ) : (
-            <Link key={label} to={{ pathname: '/', hash }} className="marketing-nav-link">
-              {label}
-            </Link>
-          ),
-        )}
-      </nav>
+            </NavLink>
+          ))}
+        </nav>
 
-      <div className="marketing-header-actions">
-        <Link to="/login" className="btn-header-cta" aria-current={onAuthPage && pathname === '/login' ? 'page' : undefined}>
-          Sign In
-        </Link>
-        <Link to="/signup" className="btn-header-cta btn-header-cta--primary" aria-current={onAuthPage && pathname === '/signup' ? 'page' : undefined}>
-          Sign Up
-        </Link>
+        <div className="marketing-header-actions">
+          {signedIn ? (
+            <Link to="/" className="marketing-header-avatar" aria-label="Your profile">
+              {user.profile_photo ? (
+                <img src={user.profile_photo} alt="" />
+              ) : (
+                <span>{(user.username || user.email || '?').charAt(0).toUpperCase()}</span>
+              )}
+            </Link>
+          ) : (
+            <>
+              <Link to="/login" className="marketing-nav-link">
+                Sign in
+              </Link>
+              <Link to="/signup" className="btn-header-cta">
+                Sign up
+              </Link>
+            </>
+          )}
+        </div>
       </div>
     </header>
   )

@@ -1,15 +1,4 @@
 # services/google_health/client.py
-# Authenticated calls against the Google Health API (v4).
-# Docs: https://developers.google.com/health/reference/rest/v4
-#
-# Every call here acts on behalf of one specific WorldWalker user_id,
-# threaded all the way through from the caller (the webhook, a facade
-# call, a dev script) - never an ambient "whichever connection is
-# active." Token handling goes through auth/connections.py (DB-backed),
-# via _current_access_token() - the one seam tests mock out.
-# get_health_user_id is the exception: it always takes an explicit
-# access_token, since it's called right after exchange_code(), before any
-# DB row (and so any user_id to look one up by) exists yet.
 
 from datetime import datetime, timedelta
 

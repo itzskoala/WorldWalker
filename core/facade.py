@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 from database import trips
 from database.models import ActiveTrip, TripCheckpoint
 from database.session import SessionLocal
-from travel_logic.coordinates import Coordinates
+from travel_logic.dataclasses.coordinates import Coordinates
 from travel_logic.geocoder import Place, create_geocoder
 from travel_logic.route_service import OSRMWalkingRouteService, Route, RoutePoint, build_route
 from travel_logic.progress_calculator import (
@@ -35,8 +35,8 @@ from travel_logic.progress_calculator import (
     interval_within_any,
     milestones_just_crossed,
 )
-from travel_logic.checkpoints import resolve_checkpoint_name, generate_checkpoint_description
-from travel_logic.description_generator import AIDescriptionGenerator
+from travel_logic.checkpoints import resolve_checkpoint_name
+from travel_logic.description_generator import generate_checkpoint_description
 from data.total_distance_db import TotalDistanceDB
 from core.observer_decorator.event_manager import EventManager
 from core.observer_decorator.console_alert_listener import ConsoleAlertListener
@@ -79,7 +79,6 @@ class TravelFacade:
     def __init__(self):
         self._geocoder = create_geocoder()
         self._router = OSRMWalkingRouteService()
-        self._describer = AIDescriptionGenerator()
         self._db = TotalDistanceDB()
 
         # Publisher (Observer pattern - https://refactoring.guru/design-patterns/observer):
@@ -210,15 +209,13 @@ class TravelFacade:
         """One checkpoint's real name + AI description, resolved and
         persisted off the main request/sync thread - see
         _ensure_checkpoint_metadata()'s thread pool above. A failure here
-        (Nominatim down, AI call raised - generate_checkpoint_description()
-        already degrades to a fallback line for the AI half, but
-        resolve_checkpoint_name() itself can still raise) releases the
+        (Nominatim down, or the AI call itself failing) releases the
         claim back to "pending" rather than leaving the checkpoint stuck
         "processing" forever - a later bootstrap/lookahead call retries
         it."""
         try:
             name = resolve_checkpoint_name(coordinates, self._geocoder)
-            description = generate_checkpoint_description(name, coordinates, self._describer)
+            description = generate_checkpoint_description(name, coordinates.lat, coordinates.lng)
             with SessionLocal() as session:
                 row = trips.set_checkpoint_metadata(session, checkpoint_id, name, description)
                 if row is None:
@@ -740,5 +737,5 @@ def _real_stride_by_type(user_id: uuid.UUID) -> dict:
 # One shared instance for the whole process - the webhook
 # (services/google_health/webhook.py) and app.py's routes both need the
 # same facade (it holds no per-user state itself anymore, just the shared
-# geocoder/router/describer/db handles and the Observer event bus).
+# geocoder/router/db handles and the Observer event bus).
 travel_facade = TravelFacade()

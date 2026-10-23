@@ -15,7 +15,7 @@ import pytest
 from core.facade import TravelFacade, METERS_PER_MILE
 from core.observer_decorator.event_listener import EventListener
 from database import trips
-from travel_logic.coordinates import Coordinates
+from travel_logic.dataclasses.coordinates import Coordinates
 from travel_logic.route_service import EARTH_RADIUS_METERS, Route, RoutePoint
 from services.fitbit_pydantic_schema import ExerciseData, TimeInterval, ExerciseMetricsSummary
 
@@ -456,11 +456,15 @@ class _FakeMetadataGeocoder:
 
 
 class _FakeMetadataDescriber:
+    """Callable fake for core.facade.generate_checkpoint_description
+    (name, lat, lng) -> description - monkeypatched in directly below,
+    since that's a lone function now, not an injected object."""
+
     def __init__(self, raises=False):
         self.raises = raises
         self.calls = 0
 
-    def generate(self, prompt):
+    def __call__(self, name, latitude, longitude):
         self.calls += 1
         if self.raises:
             raise RuntimeError("model is down")
@@ -470,14 +474,14 @@ class _FakeMetadataDescriber:
 def _facade_with_synchronous_metadata_pipeline(monkeypatch, geocoder=None, describer=None) -> TravelFacade:
     """Always swaps in fakes for both the geocoder and the describer -
     even a test that doesn't care about their output must never fall
-    through to the real NominatimGeocoder/AIDescriptionGenerator, since
-    the synchronous executor below means any checkpoint-metadata
+    through to the real NominatimGeocoder/generate_checkpoint_description,
+    since the synchronous executor below means any checkpoint-metadata
     resolution these tests trigger runs for real, inline, immediately -
     not off on a background thread a real test would never wait for."""
     f = TravelFacade()
     monkeypatch.setattr("core.facade._checkpoint_metadata_executor", _SynchronousExecutor())
     f._geocoder = geocoder if geocoder is not None else _FakeMetadataGeocoder({(0.0, 0.0): "Somewhere"})
-    f._describer = describer if describer is not None else _FakeMetadataDescriber()
+    monkeypatch.setattr("core.facade.generate_checkpoint_description", describer if describer is not None else _FakeMetadataDescriber())
     return f
 
 
@@ -559,11 +563,11 @@ def test_ensure_checkpoint_metadata_is_safe_to_call_twice_for_the_same_checkpoin
 
 def test_resolve_checkpoint_metadata_failure_releases_the_claim_for_a_later_retry(patched_session, user_id, monkeypatch):
     geocoder = _FakeMetadataGeocoder({(0.0, 0.0): "Somewhere"})
-    failing_describer = _FakeMetadataDescriber(raises=False)  # description falls back gracefully on its own
+    describer = _FakeMetadataDescriber()  # this test is about the geocoder failing, not the describer
 
     def _explode(coords):
         raise RuntimeError("Nominatim is down")
-    f = _facade_with_synchronous_metadata_pipeline(monkeypatch, geocoder=geocoder, describer=failing_describer)
+    f = _facade_with_synchronous_metadata_pipeline(monkeypatch, geocoder=geocoder, describer=describer)
     monkeypatch.setattr(f._geocoder, "reverse_geocode_city", _explode)
     monkeypatch.setattr(f._router, "get_walking_route", lambda start, end: _route(2_000.0))
     monkeypatch.setattr("core.facade.get_profile", lambda user_id: {})

@@ -7,27 +7,18 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from accounts import email_validation, security
+from accounts import email_validation, security, username_validation
 from database.models import User
-
-# TODO(otp): these back the disabled start_email_signup()/
-# verify_email_signup() below - `import os`, `from datetime import
-# datetime, timedelta, timezone`, and `from database.models import
-# SignupVerification` go with them when this is revived. Note: the
-# signup_verifications table itself was dropped (migration
-# f89b5d8d5882_drop_dead_signup_verifications_table) while this flow was
-# disabled - reviving this needs that table re-added first.
-# OTP_EXPIRE_MINUTES = int(os.environ.get("OTP_EXPIRE_MINUTES", "10"))
-#
-# # verify_email_signup() deletes the pending row once this many wrong
-# # guesses have been made against it, forcing a fresh /auth/signup/start
-# # (and a fresh code) rather than allowing unlimited guessing against a
-# # 6-digit space.
-# MAX_OTP_ATTEMPTS = 5
+from user_profile.profile_page import set_username
 
 
 def get_user_by_email(session: Session, email: str) -> User | None:
     statement = select(User).where(User.email == email)
+    return session.execute(statement).scalar_one_or_none()
+
+
+def get_user_by_username(session: Session, username: str) -> User | None:
+    statement = select(User).where(User.username == username)
     return session.execute(statement).scalar_one_or_none()
 
 
@@ -60,80 +51,23 @@ def signup(session: Session, email: str, password: str) -> User:
     return user
 
 
-# TODO(otp): the two-step "email a 6-digit code, verify it, then create
-# the account" flow - disabled in favor of signup() above creating the
-# account directly. accounts/router.py's /signup/start and /signup/verify
-# routes, and accounts/otp_email.py's send_otp_email(), are unused while
-# this is off. Reviving this needs the signup_verifications table added
-# back (dropped by migration f89b5d8d5882) - see accounts/schemas.py's
-# SignupStartRequest/SignupVerifyRequest for the matching request shapes.
-#
-# def start_email_signup(session: Session, email: str, password: str) -> str:
-#     """Step 1 of email/password signup (POST /auth/signup/start): no
-#     User row is created here - just a pending SignupVerification with a
-#     fresh 6-digit code, upserted by email so a second call for the same
-#     address (the frontend's "Resend code") replaces the earlier code
-#     instead of piling up old ones. Returns the plaintext code so
-#     accounts/router.py can hand it to accounts/otp_email.py - nothing in
-#     this module ever sends anything itself.
-#
-#     Raises ValueError before any code is generated or sent: an
-#     already-registered email, or one that fails the same validation
-#     GET /auth/validate-email exposes for the frontend's real-time check
-#     (accounts/email_validation.py) - never trust the client-side pass
-#     alone."""
-#     if not email_validation.is_valid_email(email):
-#         raise ValueError("Enter a valid email address")
-#
-#     if get_user_by_email(session, email) is not None:
-#         raise ValueError("Email already registered")
-#
-#     code = security.generate_otp_code()
-#     now = datetime.now(timezone.utc)
-#
-#     pending = session.get(SignupVerification, email)
-#     if pending is None:
-#         pending = SignupVerification(email=email)
-#         session.add(pending)
-#
-#     pending.hashed_password = security.hash_password(password)
-#     pending.code_hash = security.hash_password(code)
-#     pending.attempts = 0
-#     pending.expires_at = now + timedelta(minutes=OTP_EXPIRE_MINUTES)
-#     session.commit()
-#
-#     return code
-#
-#
-# def verify_email_signup(session: Session, email: str, code: str) -> User:
-#     """Step 2 (POST /auth/signup/verify) - this call IS account creation,
-#     not a step after it: there is no unverified User row sitting around
-#     before this succeeds, only the pending SignupVerification row it
-#     redeems and deletes."""
-#     pending = session.get(SignupVerification, email)
-#     if pending is None:
-#         raise ValueError("Start over - request a new code")
-#
-#     if datetime.now(timezone.utc) > pending.expires_at:
-#         session.delete(pending)
-#         session.commit()
-#         raise ValueError("Code expired - request a new one")
-#
-#     if pending.attempts >= MAX_OTP_ATTEMPTS:
-#         session.delete(pending)
-#         session.commit()
-#         raise ValueError("Too many incorrect attempts - request a new code")
-#
-#     if not security.verify_password(code, pending.code_hash):
-#         pending.attempts += 1
-#         session.commit()
-#         raise ValueError("Incorrect code")
-#
-#     user = User(email=email, hashed_password=pending.hashed_password)
-#     session.add(user)
-#     session.delete(pending)
-#     session.commit()
-#     return user
+def update_username(session: Session, user: User, username: str) -> None:
+    """Validates before handing off to user_profile.profile_page.set_username -
+    format (accounts/username_validation.py) and uniqueness against every
+    other account. Raises ValueError on either failure; accounts/router.py's
+    PATCH /auth/me turns that into a 400 the profile form shows inline
+    (frontend/src/components/profile/ProfileUsernameField.tsx), which also
+    has its own GET /auth/validate-username real-time check against these
+    same two rules - never trust that client-side pass alone."""
+    if not username_validation.is_valid_format(username):
+        raise ValueError("Username can only contain letters, numbers, and underscores")
+
+    if username:
+        existing = get_user_by_username(session, username)
+        if existing is not None and existing.id != user.id:
+            raise ValueError("Username already in use")
+
+    set_username(session, user, username)
 
 
 def authenticate(session: Session, email: str, password: str) -> User | None:

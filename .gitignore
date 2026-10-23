@@ -15,3 +15,13 @@ data/geocode_cache.json
 .vercel
 .env*
 node_modules/
+
+# Terraform - state can contain infra metadata and must never be
+# committed (terraform/gcp/README.md's own warning); .terraform/ holds
+# downloaded provider binaries, not source.
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log

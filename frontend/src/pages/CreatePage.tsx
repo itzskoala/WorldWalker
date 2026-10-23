@@ -4,8 +4,10 @@
 // WorldWindGlobe.tsx.
 
 import { useEffect, useRef, useState } from 'react'
-import { PlaceAutocomplete } from '../components/PlaceAutocomplete'
-import { WorldWindGlobe } from '../components/WorldWindGlobe'
+import { CreateHero } from '../components/create/CreateHero'
+import { TripTypeToggle, type TripType } from '../components/create/TripTypeToggle'
+import { RouteFieldsRow } from '../components/create/RouteFieldsRow'
+import { StartWalkingButton } from '../components/create/StartWalkingButton'
 import { prewarmMapAssets } from '../components/tripMap'
 import { validateRoute } from '../api/tripApi'
 import type { ResolvedPlace } from '../types/trip'
@@ -25,7 +27,7 @@ interface CreatePageProps {
 }
 
 export function CreatePage({ onStartWalking }: CreatePageProps) {
-  const [tripType, setTripType] = useState<'round' | 'one-way'>('round')
+  const [tripType, setTripType] = useState<TripType>('round')
   const [from, setFromText] = useState('')
   const [to, setToText] = useState('')
   // The coordinates behind `from`/`to`, once a suggestion (or "Use current
@@ -227,95 +229,34 @@ export function CreatePage({ onStartWalking }: CreatePageProps) {
 
   return (
     <section className="screen" id="screen-create" aria-label="Plan a walk">
-      <section className="globe-header">
-        <WorldWindGlobe />
-        <div className="globe-header-scrim" aria-hidden="true" />
-        <div className="globe-header-text">
-          <h1 className="hero-title">Walk the World</h1>
-          <p className="hero-sub">Turn your real, everyday steps into a journey across the globe.</p>
-        </div>
-      </section>
+      <CreateHero />
 
       <div className="screen-inner screen-inner-overlap">
         <section className="search-card" id="search-card" aria-label="Plan your walk">
-          <div className="trip-toggle" role="radiogroup" aria-label="Trip type">
-            <button
-              type="button"
-              className={`trip-pill${tripType === 'round' ? ' is-active' : ''}`}
-              role="radio"
-              aria-checked={tripType === 'round'}
-              onClick={() => setTripType('round')}
-            >
-              Round trip
-            </button>
-            <button
-              type="button"
-              className={`trip-pill${tripType === 'one-way' ? ' is-active' : ''}`}
-              role="radio"
-              aria-checked={tripType === 'one-way'}
-              onClick={() => setTripType('one-way')}
-            >
-              One way
-            </button>
-          </div>
+          <TripTypeToggle value={tripType} onChange={setTripType} />
 
-          <div className="fields-row" data-active={activeField ?? undefined}>
-            <PlaceAutocomplete
-              id="from"
-              label="Where from?"
-              placeholder="City, State, or Address"
-              pinColor="green"
-              value={from}
-              onChange={setFrom}
-              onSelect={selectFrom}
-              onActiveChange={(active) => setActiveField(active ? 'from' : null)}
-              onResolvingChange={setFromResolving}
-              resolved={fromLocation !== null}
-              currentLocationButton
-            />
+          <RouteFieldsRow
+            activeField={activeField}
+            onActiveFieldChange={setActiveField}
+            from={from}
+            onFromChange={setFrom}
+            onFromSelect={selectFrom}
+            onFromResolvingChange={setFromResolving}
+            fromResolved={fromLocation !== null}
+            to={to}
+            onToChange={setTo}
+            onToSelect={selectTo}
+            onToResolvingChange={setToResolving}
+            toResolved={toLocation !== null}
+            swapping={swapping}
+            onSwap={swap}
+          />
 
-            <button type="button" className={`swap-btn${swapping ? ' is-spinning' : ''}`} aria-label="Swap starting point and destination" onClick={swap}>
-              <svg className="icon" viewBox="0 0 24 24" fill="none">
-                <path d="M7 7h12m0 0-4-4m4 4-4 4M17 17H5m0 0 4 4m-4-4 4-4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-            </button>
-
-            <PlaceAutocomplete
-              id="to"
-              label="Where to?"
-              placeholder="Oh, the places you'll go!"
-              pinColor="red"
-              value={to}
-              onChange={setTo}
-              onSelect={selectTo}
-              onActiveChange={(active) => setActiveField(active ? 'to' : null)}
-              onResolvingChange={setToResolving}
-              resolved={toLocation !== null}
-            />
-          </div>
-
-          <button
-            type="button"
-            className="btn btn-start"
-            id="start-btn"
+          <StartWalkingButton
             disabled={starting || !fromLocation || !toLocation || fromResolving || toResolving || !routeConfirmed}
+            checking={routeStatus === 'checking'}
             onClick={startWalking}
-          >
-            {routeStatus === 'checking' ? (
-              <>
-                <span className="spinner spinner-sm" aria-hidden="true" />
-                Checking route…
-              </>
-            ) : (
-              <>
-                <svg className="icon" viewBox="0 0 24 24" fill="none">
-                  <circle cx="11" cy="11" r="7" stroke="currentColor" strokeWidth="2" />
-                  <path d="m21 21-4.3-4.3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-                </svg>
-                Start Walking
-              </>
-            )}
-          </button>
+          />
         </section>
       </div>
     </section>

@@ -6,7 +6,7 @@ import uuid
 from typing import Optional, Literal
 from pydantic import BaseModel
 from core.facade import travel_facade
-from travel_logic.coordinates import Coordinates
+from travel_logic.dataclasses.coordinates import Coordinates
 
 
 class IntakeRequest(BaseModel):

@@ -1,30 +1,14 @@
-// The logged-in navbar - deliberately minimal: logo, the Google Health
-// connection status (existing backend - see hooks/useGoogleHealthConnection.ts,
-// shared with Sidebar.tsx's own connection button, not a second
-// implementation), and the profile photo. No email, no extra nav links -
-// MarketingHeader.tsx is the separate, unrelated signed-out navbar; this
-// one only ever renders inside AppShell, which only mounts once someone
-// is actually signed in.
+// The logged-in navbar - stripped down to just the brand mark/logo and
+// an empty placeholder slot on the right. The Google Health connection
+// status (and its Connect/Disconnect toggle) now lives solely on
+// ConnectionsPage.tsx - no second instance up here. MarketingHeader.tsx
+// is the separate, unrelated signed-out navbar; this one only ever
+// renders inside AppShell, which only mounts once someone is actually
+// signed in.
 
-import { useAuth } from '../auth/AuthContext'
-import type { GoogleHealthConnection } from '../hooks/useGoogleHealthConnection'
-import { ConnectionStatusButton } from './ConnectionStatusButton'
 import { IconMountain } from './icons'
 
-interface TopbarProps {
-  connection: GoogleHealthConnection
-  onOpenProfile: () => void
-}
-
-export function Topbar({ connection, onOpenProfile }: TopbarProps) {
-  const { user } = useAuth()
-
-  // No profile-photo field on the account (accounts/schemas.py's
-  // UserOut is just id/email/is_active/created_at) - always the initial
-  // letter badge, never a photo.
-  const avatarSrc: string | undefined = undefined
-  const avatarInitial = (user?.email || 'W').charAt(0).toUpperCase()
-
+export function Topbar() {
   return (
     <header className="topbar">
       <div className="brand">
@@ -32,13 +16,9 @@ export function Topbar({ connection, onOpenProfile }: TopbarProps) {
         <span className="brand-name">WorldWalker</span>
       </div>
 
-      <div className="topbar-actions">
-        <ConnectionStatusButton connection={connection} />
-
-        <button type="button" className="topbar-avatar-btn" aria-label="Your profile" onClick={onOpenProfile}>
-          {avatarSrc ? <img src={avatarSrc} alt="" /> : <span>{avatarInitial}</span>}
-        </button>
-      </div>
+      {/* Reserved for whatever goes here next (search, notifications,
+          account menu) - intentionally empty for now. */}
+      <div className="topbar-placeholder" aria-hidden="true" />
     </header>
   )
 }

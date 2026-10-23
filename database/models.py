@@ -13,9 +13,9 @@
 # guarantee.
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, Float, ForeignKey, Index, Integer, String, func, text
+from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, Float, ForeignKey, Index, Integer, String, func, text
 from sqlalchemy.dialects.postgresql import JSON, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -50,15 +50,21 @@ class User(Base):
     # account that later linked Google, see signup_or_login_google()).
     google_sub: Mapped[str | None] = mapped_column(String, unique=True, nullable=True)
 
-    # Vestigial: a brief Clerk-based-identity experiment (2026-10) that
-    # was reverted back to this file's own JWT login before shipping -
-    # unused by any code now, kept only because every existing row's
-    # value here is still null (nothing ever wrote to it in production)
-    # and dropping a column is a one-way migration this revert doesn't
-    # need to force through. Safe to drop in a later cleanup.
-    clerk_user_id: Mapped[str | None] = mapped_column(String, unique=True, nullable=True)
-
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+
+    # Profile page fields.
+    username: Mapped[str | None] = mapped_column(String, nullable=True)
+    f_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    l_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    profile_photo: Mapped[str | None] = mapped_column(String, nullable=True)
+    bio: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    # Persisted running totals, not computed - they need to survive a
+    # trip (and its step_sync_log/postcard rows) being deleted.
+    lifetime_steps: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    postcards_sum: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+
+    member_since: Mapped[date] = mapped_column(Date, nullable=False, server_default=func.current_date())
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

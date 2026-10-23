@@ -8,6 +8,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import * as authApi from '../api/authApi'
+import type { ProfileUpdate, UsernameValidation } from '../api/authApi'
 import { onUnauthorized, refreshAccessToken } from '../api/httpClient'
 import type { AuthStatus, User } from '../types/user'
 
@@ -18,7 +19,9 @@ interface AuthContextValue {
   signup: (email: string, password: string) => Promise<void>
   loginWithGoogle: (credential: string) => Promise<void>
   validateEmail: (email: string) => Promise<boolean>
+  validateUsername: (username: string) => Promise<UsernameValidation>
   logout: () => Promise<void>
+  updateProfile: (fields: ProfileUpdate) => Promise<void>
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null)
@@ -89,9 +92,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setStatus('unauthenticated')
   }, [])
 
+  const updateProfile = useCallback(async (fields: ProfileUpdate) => {
+    const updated = await authApi.updateProfile(fields)
+    setUser(updated)
+  }, [])
+
   const value = useMemo<AuthContextValue>(
-    () => ({ status, user, login, signup, loginWithGoogle, validateEmail: authApi.validateEmail, logout }),
-    [status, user, login, signup, loginWithGoogle, logout],
+    () => ({
+      status,
+      user,
+      login,
+      signup,
+      loginWithGoogle,
+      validateEmail: authApi.validateEmail,
+      validateUsername: authApi.validateUsername,
+      logout,
+      updateProfile,
+    }),
+    [status, user, login, signup, loginWithGoogle, logout, updateProfile],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

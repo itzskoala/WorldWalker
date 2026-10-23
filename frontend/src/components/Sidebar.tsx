@@ -4,10 +4,11 @@
 // "home") even though it's labeled "My Walks" here, to avoid renaming
 // that plumbing just for a label change.
 //
-// Below the four screen links: "My Connections" and Settings - two more
-// screen destinations, same NavButton as the four above (not the colored
-// connection pill Topbar.tsx uses - My Connections just navigates to
-// ConnectionsPage.tsx, which reads the real Google Health state itself).
+// Below the four screen links: "Connections" and Settings - two more
+// screen destinations, same NavButton as the four above. Connections
+// just navigates to ConnectionsPage.tsx, which reads the real Google
+// Health state itself (and owns the only Connect/Disconnect button now -
+// Topbar.tsx no longer has one).
 
 import { IconCompass, IconConnection, IconFootsteps, IconGear, IconImages, IconPerson } from './icons'
 
@@ -21,7 +22,7 @@ const ITEMS: { name: ScreenName; label: string; icon: typeof IconCompass }[] = [
 ]
 
 const SECONDARY_ITEMS: { name: ScreenName; label: string; icon: typeof IconGear }[] = [
-  { name: 'connections', label: 'My Connections', icon: IconConnection },
+  { name: 'connections', label: 'Connections', icon: IconConnection },
   { name: 'settings', label: 'Settings', icon: IconGear },
 ]
 
@@ -36,9 +37,9 @@ interface SidebarProps {
 function SidebarMountains() {
   return (
     <svg className="sidebar-footer-art" viewBox="0 0 120 64" aria-hidden="true">
-      <path d="M0 64 26 28 46 52 58 38 78 64Z" fill="var(--green)" fillOpacity="0.18" />
-      <path d="M18 64 48 22 70 50 88 30 118 64Z" fill="var(--green)" fillOpacity="0.3" />
-      <path d="M42 64 64 34 80 54 96 36 118 64Z" fill="var(--green)" fillOpacity="0.5" />
+      <path d="M0 64 26 28 46 52 58 38 78 64Z" fill="var(--ink-faint)" fillOpacity="0.18" />
+      <path d="M18 64 48 22 70 50 88 30 118 64Z" fill="var(--ink-faint)" fillOpacity="0.3" />
+      <path d="M42 64 64 34 80 54 96 36 118 64Z" fill="var(--ink-faint)" fillOpacity="0.5" />
     </svg>
   )
 }

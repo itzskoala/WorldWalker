@@ -1,0 +1,64 @@
+# .dockerignore
+# Keeps the build context small and makes sure nothing secret, local-only,
+# or build-generated ever reaches the image - even if a future edit to
+# the Dockerfile switches to a broader `COPY . .`.
+
+# Version control / IaC (not needed inside the app image)
+.git
+.github
+terraform/
+.terraform/
+
+# Python
+venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+
+# Secrets and anything environment-specific - never bake these into an image
+.env
+.env.*
+credentials.json
+service-account.json
+.tokens.json
+
+# Local-only data artifacts (geocode_cache.json is a dev cache file,
+# total_distance.db is a stale pre-Postgres leftover - see
+# data/total_distance_db.py's docstring). Production uses Neon via
+# DATABASE_URL, never a file in this repo.
+data/geocode_cache.json
+data/total_distance.db
+*.db
+
+# Frontend deps/build output - the Dockerfile builds these fresh in its
+# own frontend-build stage, so the host's copies (if any) must not leak in.
+frontend/node_modules
+frontend/dist
+node_modules/
+
+# Not needed at runtime
+tests/
+docs/
+progress/
+dev_testing/
+scripts/
+migrations/
+alembic.ini
+scope.md
+tasks.md
+results.md
+proposal.md
+notes.txt
+Codelab.http
+
+# Vercel-specific - unused by the Cloud Run image
+.vercel
+.vercelignore
+vercel.json
+
+# Editor/assistant metadata
+.claude/
+.agents/
+.DS_Store
+skills-lock.json

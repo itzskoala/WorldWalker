@@ -23,7 +23,7 @@ from travel_logic.progress_calculator import (
     DEFAULT_STRIDE_M_BY_TYPE,
 )
 from travel_logic.route_service import Route, RoutePoint
-from travel_logic.coordinates import Coordinates
+from travel_logic.dataclasses.coordinates import Coordinates
 
 
 # --- resolve_stride_m ---

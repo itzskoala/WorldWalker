@@ -33,7 +33,7 @@ from services.google_health.webhook import (
     BACKFILL_DATA_TYPES,
     WEBHOOK_SECRET,
 )
-from travel_logic.coordinates import Coordinates
+from travel_logic.dataclasses.coordinates import Coordinates
 from travel_logic.route_service import EARTH_RADIUS_METERS, Route, RoutePoint
 
 app = FastAPI()

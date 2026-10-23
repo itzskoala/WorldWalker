@@ -9,7 +9,8 @@
 
 import os
 
-from cryptography.fernet import Fernet
+from cryptography.exceptions import InvalidSignature
+from cryptography.fernet import Fernet, InvalidToken
 from dotenv import load_dotenv
 from sqlalchemy import String
 from sqlalchemy.types import TypeDecorator
@@ -45,4 +46,19 @@ class EncryptedString(TypeDecorator):
     def process_result_value(self, value, dialect):
         if value is None:
             return None
-        return _fernet.decrypt(value.encode()).decode()
+        try:
+            return _fernet.decrypt(value.encode()).decode()
+        except (InvalidToken, InvalidSignature):
+            # Ciphertext this process's TOKEN_ENCRYPTION_KEY can't open -
+            # confirmed in production: a Google Health connection row
+            # written under a previous deployment's key raised
+            # cryptography.exceptions.InvalidSignature deep inside the
+            # ORM's row-loading, crashing /auth/google/status and
+            # blocking reconnect (upsert_connection_from_tokens looks up
+            # the existing row before overwriting it). There's no way to
+            # recover the plaintext without the original key, and every
+            # caller already treats a missing token as "not connected"
+            # (see auth/connections.py's get_active_connection) - so
+            # returning None here is the only safe, honest value: this
+            # column's real content is unknown, not legitimately empty.
+            return None

@@ -6,6 +6,14 @@ export interface User {
   email: string
   is_active: boolean
   created_at: string
+  username: string | null
+  f_name: string | null
+  l_name: string | null
+  profile_photo: string | null
+  bio: string | null
+  lifetime_steps: number
+  postcards_sum: number
+  member_since: string
 }
 
 export interface AccessTokenResponse {

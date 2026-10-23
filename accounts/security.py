@@ -2,7 +2,6 @@
 # Password hashing and JWT creation/decoding for the login system.
 
 import os
-import secrets
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
@@ -57,12 +56,3 @@ def create_refresh_token(user_id: str, remember_me: bool = True) -> str:
 
 def decode_token(token: str) -> dict:
     return jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-
-
-def generate_otp_code() -> str:
-    """A fresh 6-digit signup verification code (accounts/service.py's
-    start_email_signup()) - secrets.choice, not random, since this is a
-    value someone could otherwise guess or replay. Stored via
-    hash_password()/verify_password() above, same as a real password -
-    a 6-digit space is small, but it's still never kept in the clear."""
-    return "".join(secrets.choice("0123456789") for _ in range(6))

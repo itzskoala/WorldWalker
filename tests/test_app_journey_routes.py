@@ -14,7 +14,7 @@ from sqlalchemy import event
 from app import app
 from core.facade import travel_facade
 from database.models import StepSyncLog, User
-from travel_logic.coordinates import Coordinates
+from travel_logic.dataclasses.coordinates import Coordinates
 from travel_logic.route_service import Route, RoutePoint
 
 client = TestClient(app)

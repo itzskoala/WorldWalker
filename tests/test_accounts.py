@@ -17,10 +17,6 @@ from accounts.service import signup as create_user
 from app import app
 from database.models import User
 
-# TODO(otp): MAX_OTP_ATTEMPTS (accounts.service) and SignupVerification
-# (database.models) go back in the imports above when the OTP tests below
-# are revived.
-
 
 @pytest.fixture
 def client():
@@ -71,117 +67,6 @@ def test_signup_rejects_an_invalid_email(patched_session, client):
     response = client.post("/auth/signup", json={"email": "not-an-email", "password": "correct-horse"})
     assert response.status_code == 400
     assert patched_session.query(User).count() == 0
-
-
-# TODO(otp): tests for the two-step "email a 6-digit code, verify it,
-# then create the account" flow - disabled along with the routes/service
-# functions they exercised (accounts/router.py's /signup/start and
-# /signup/verify, accounts/service.py's start_email_signup()/
-# verify_email_signup()). Revive together.
-#
-# @pytest.fixture
-# def sent_codes(monkeypatch):
-#     codes = {}
-#
-#     def _fake_send(email, code):
-#         codes[email] = code
-#
-#     monkeypatch.setattr("accounts.router.send_otp_email", _fake_send)
-#     return codes
-#
-#
-# def _start_signup(client, sent_codes, email="walker@example.com", password="correct-horse"):
-#     response = client.post("/auth/signup/start", json={"email": email, "password": password})
-#     assert response.status_code == 200
-#     return sent_codes[email]
-#
-#
-# def test_signup_start_sends_a_code_and_creates_no_account_yet(patched_session, client, skip_mx_lookup, sent_codes):
-#     response = client.post("/auth/signup/start", json={"email": "walker@example.com", "password": "correct-horse"})
-#
-#     assert response.status_code == 200
-#     assert sent_codes["walker@example.com"]
-#     assert len(sent_codes["walker@example.com"]) == 6
-#     assert patched_session.query(User).count() == 0
-#
-#
-# def test_signup_start_rejects_a_duplicate_email(patched_session, client, skip_mx_lookup, sent_codes):
-#     create_user(patched_session, "walker@example.com", "correct-horse")
-#
-#     response = client.post("/auth/signup/start", json={"email": "walker@example.com", "password": "another-password"})
-#
-#     assert response.status_code == 400
-#
-#
-# def test_signup_start_rejects_an_invalid_email(patched_session, client):
-#     response = client.post("/auth/signup/start", json={"email": "not-an-email", "password": "correct-horse"})
-#     assert response.status_code == 400
-#
-#
-# def test_signup_verify_with_the_correct_code_creates_the_user_and_returns_tokens(
-#     patched_session, client, skip_mx_lookup, sent_codes
-# ):
-#     code = _start_signup(client, sent_codes)
-#
-#     response = client.post("/auth/signup/verify", json={"email": "walker@example.com", "code": code})
-#
-#     assert response.status_code == 200
-#     assert response.json()["access_token"]
-#     assert "refresh_token" in response.cookies
-#     assert patched_session.query(User).count() == 1
-#
-#
-# def test_signup_verify_rejects_the_wrong_code(patched_session, client, skip_mx_lookup, sent_codes):
-#     _start_signup(client, sent_codes)
-#
-#     response = client.post("/auth/signup/verify", json={"email": "walker@example.com", "code": "000000"})
-#
-#     assert response.status_code == 400
-#     assert patched_session.query(User).count() == 0
-#
-#
-# def test_signup_verify_rejects_an_expired_code(patched_session, client, skip_mx_lookup, sent_codes):
-#     code = _start_signup(client, sent_codes)
-#
-#     pending = patched_session.get(SignupVerification, "walker@example.com")
-#     pending.expires_at = datetime.now(timezone.utc) - timedelta(minutes=1)
-#     patched_session.commit()
-#
-#     response = client.post("/auth/signup/verify", json={"email": "walker@example.com", "code": code})
-#
-#     assert response.status_code == 400
-#     assert patched_session.query(User).count() == 0
-#
-#
-# def test_signup_verify_locks_out_after_too_many_wrong_attempts(patched_session, client, skip_mx_lookup, sent_codes):
-#     _start_signup(client, sent_codes)
-#
-#     for _ in range(MAX_OTP_ATTEMPTS):
-#         client.post("/auth/signup/verify", json={"email": "walker@example.com", "code": "000000"})
-#
-#     # Even the real code is rejected now - the pending signup is gone,
-#     # not just "one more wrong guess away" from being gone.
-#     response = client.post("/auth/signup/verify", json={"email": "walker@example.com", "code": sent_codes["walker@example.com"]})
-#
-#     assert response.status_code == 400
-#     assert patched_session.query(SignupVerification).count() == 0
-#
-#
-# def test_signup_start_again_replaces_the_earlier_code(patched_session, client, skip_mx_lookup, sent_codes):
-#     """"Resend code" (frontend/src/pages/SignupPage.tsx) is just another /start
-#     call for the same email - the old code should stop working once a
-#     new one's been issued."""
-#     old_code = _start_signup(client, sent_codes)
-#     new_code = _start_signup(client, sent_codes)
-#
-#     assert old_code != new_code
-#     assert patched_session.query(SignupVerification).count() == 1
-#
-#     old_attempt = client.post("/auth/signup/verify", json={"email": "walker@example.com", "code": old_code})
-#     assert old_attempt.status_code == 400
-#
-#     new_attempt = client.post("/auth/signup/verify", json={"email": "walker@example.com", "code": new_code})
-#     assert new_attempt.status_code == 200
 
 
 # --- email validation (GET /auth/validate-email) ---
@@ -481,7 +366,7 @@ def test_existing_users_trips_and_google_health_connection_stay_attached_after_l
     and confirms /auth/me resolves back to that exact row, with the
     connection and a seeded trip both still foreign-keyed to it."""
     from travel_logic.route_service import Route, RoutePoint
-    from travel_logic.coordinates import Coordinates
+    from travel_logic.dataclasses.coordinates import Coordinates
 
     user = patched_session.get(User, connected_user_id)
     user.email = "connected@example.com"

@@ -5,6 +5,7 @@
 # TypeDecorator entirely, so it can't be fooled by the ORM quietly
 # decrypting on the way back out.
 
+from cryptography.fernet import Fernet
 from sqlalchemy import text
 
 from database.models import GoogleHealthConnection, User
@@ -60,3 +61,25 @@ def test_null_tokens_stay_null(db_session):
     reloaded = db_session.get(GoogleHealthConnection, connection.id)
     assert reloaded.access_token is None
     assert reloaded.refresh_token is None
+
+
+def test_token_undecryptable_under_current_key_reads_back_as_none(db_session):
+    """Reproduces the production incident directly: a row whose
+    access_token/refresh_token were encrypted under a DIFFERENT
+    TOKEN_ENCRYPTION_KEY than the one this process is running with (e.g.
+    a previous deployment's key) must read back as None, not raise -
+    before this fix, loading this exact row crashed
+    /auth/google/status with cryptography.exceptions.InvalidSignature,
+    deep inside the ORM's row materialization."""
+    connection = _make_connection(db_session, "stale-key-user", "placeholder", "placeholder")
+
+    other_key_ciphertext = Fernet(Fernet.generate_key()).encrypt(b"some-access-token").decode()
+    db_session.execute(
+        text("UPDATE google_health_connections SET access_token = :ciphertext WHERE id = :id"),
+        {"ciphertext": other_key_ciphertext, "id": connection.id},
+    )
+    db_session.commit()
+    db_session.expire_all()
+
+    reloaded = db_session.get(GoogleHealthConnection, connection.id)
+    assert reloaded.access_token is None

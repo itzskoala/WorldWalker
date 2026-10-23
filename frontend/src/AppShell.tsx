@@ -62,9 +62,8 @@ function writeStoredSession(session: StoredTripSession | null) {
 export function AppShell() {
   const [screen, setScreen] = useState<ScreenName>('home')
   const [emailAlertsOpen, setEmailAlertsOpen] = useState(false)
-  // One instance, shared by Topbar's status pill and Sidebar's connection
-  // button - see the hook's own docstring on why this isn't fetched
-  // twice.
+  // Owned here and passed down to ConnectionsPage.tsx - see the hook's
+  // own docstring.
   const connection = useGoogleHealthConnection()
   // Lazily seeded from localStorage: a trip session with a real tripId but
   // no initialState, same shape HomePage's onOpenTrip puts together -
@@ -164,7 +163,7 @@ export function AppShell() {
 
   return (
     <div className="app">
-      <Topbar connection={connection} onOpenProfile={() => setScreen('profile')} />
+      <Topbar />
 
       <div className="app-body">
         <Sidebar active={screen} onChange={setScreen} />
@@ -183,7 +182,7 @@ export function AppShell() {
           <div hidden={screen !== 'postcards'}>
             <PostcardsPage />
           </div>
-          <div hidden={screen !== 'profile'}>
+          <div className="profile-screen-wrap" hidden={screen !== 'profile'}>
             <ProfilePage active={screen === 'profile'} />
           </div>
           <div hidden={screen !== 'connections'}>

@@ -1,13 +1,18 @@
 // Top-level routing - native email/password auth (src/auth/AuthContext.tsx)
-// is the only auth state now. /login and /signup are real, separate pages;
-// everything else lives under / as one authenticated app shell (tabs +
-// Trip Detail are internal state, not routes - see AppShell.tsx).
+// is the only auth state now. /login, /signup, and the marketing
+// placeholders (/explore, /about, /pricing - MarketingHeader.tsx's nav)
+// are real, separate pages reachable regardless of auth state; everything
+// else lives under / as one authenticated app shell (tabs + Trip Detail
+// are internal state, not routes - see AppShell.tsx).
 
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { AuthProvider, useAuth } from './auth/AuthContext'
 import { LoginPage } from './pages/LoginPage'
 import { SignupPage } from './pages/SignupPage'
 import { LandingPage } from './pages/LandingPage'
+import { ExplorePage } from './pages/ExplorePage'
+import { AboutPage } from './pages/AboutPage'
+import { PricingPage } from './pages/PricingPage'
 import { AppShell } from './AppShell'
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
@@ -56,6 +61,9 @@ function App() {
         <Routes>
           <Route path="/login" element={<LoginPage />} />
           <Route path="/signup" element={<SignupPage />} />
+          <Route path="/explore" element={<ExplorePage />} />
+          <Route path="/about" element={<AboutPage />} />
+          <Route path="/pricing" element={<PricingPage />} />
           <Route path="/" element={<RootRoute />} />
           <Route
             path="/*"

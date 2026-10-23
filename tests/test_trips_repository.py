@@ -12,7 +12,7 @@ import pytest
 from database import trips
 from database.models import TripCheckpoint, User
 from travel_logic.checkpoints import Checkpoint
-from travel_logic.coordinates import Coordinates
+from travel_logic.dataclasses.coordinates import Coordinates
 from travel_logic.route_service import Route, RoutePoint
 
 TOTAL_DISTANCE_M = 10_000.0

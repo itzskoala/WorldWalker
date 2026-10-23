@@ -1,9 +1,8 @@
 // Single source of truth for the Google Health connection status/toggle -
 // the existing backend (auth/router.py's /auth/google/start|status|
 // disconnect, called through api/googleHealthApi.ts), not a new
-// connection system. Topbar.tsx's status pill and Sidebar.tsx's
-// connection button both read from one call of this hook (AppShell owns
-// the one instance - see its own docstring) instead of each fetching
+// connection system. ConnectionsPage.tsx reads this one hook instance
+// (AppShell owns it - see its own docstring) instead of fetching
 // GET /auth/google/status independently.
 
 import { useCallback, useEffect, useState } from 'react'
@@ -18,8 +17,7 @@ export function useGoogleHealthConnection() {
   // The real backend error text (parseErrorMessage, see api/googleHealthApi.ts)
   // for whichever action last failed - cleared at the start of the next
   // attempt so a stale error never lingers past a retry. Surfaced by
-  // ConnectionsPage.tsx; the topbar button (ConnectionStatusButton.tsx)
-  // stays icon-only and reads it as its title instead, for lack of room.
+  // ConnectionsPage.tsx, the only place this toggle lives now.
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {

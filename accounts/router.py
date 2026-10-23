@@ -4,10 +4,7 @@
 # memory); the refresh token goes in an HTTP-only cookie.
 #
 # Signup is one call (POST /signup) that creates the account and issues
-# tokens immediately - see accounts/service.py's signup(). The two-step
-# "email a 6-digit code first" flow is disabled for now (below, and in
-# accounts/service.py/accounts/schemas.py) - see the TODO(otp) notes
-# there.
+# tokens immediately - see accounts/service.py's signup().
 
 import os
 import uuid
@@ -15,19 +12,41 @@ import uuid
 import jwt
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
-from accounts import email_validation, security
+from accounts import email_validation, security, username_validation
 from accounts.dependencies import get_current_user
 from accounts.google_oauth import GoogleTokenError, verify_google_id_token
 from accounts.schemas import (
     AccessTokenResponse,
     GoogleAuthRequest,
     LoginRequest,
+    ProfileUpdateRequest,
     SignupRequest,
     UserOut,
 )
-from accounts.service import authenticate, get_user_by_id, signup, signup_or_login_google
+from accounts.service import (
+    authenticate,
+    get_user_by_id,
+    get_user_by_username,
+    signup,
+    signup_or_login_google,
+    update_username,
+)
 from database.models import User
 from database.session import SessionLocal
+from user_profile.profile_page import (
+    get_bio,
+    get_f_name,
+    get_l_name,
+    get_lifetime_steps,
+    get_member_since,
+    get_postcards_sum,
+    get_profile_photo,
+    get_username,
+    set_f_name,
+    set_l_name,
+    set_profile_photo,
+    set_user_bio,
+)
 
 router = APIRouter(prefix="/auth")
 
@@ -66,6 +85,26 @@ def validate_email_route(email: str):
     return {"valid": email_validation.is_valid_email(email)}
 
 
+@router.get("/validate-username")
+def validate_username_route(username: str, current_user: User = Depends(get_current_user)):
+    """The profile form's real-time check
+    (frontend/src/components/profile/ProfileUsernameField.tsx) - the same
+    format+uniqueness rules PATCH /auth/me enforces on submit (accounts/
+    service.py's update_username()), just without persisting anything.
+    Authenticated (unlike /validate-email) so a user's own current
+    username never reports itself as taken."""
+    if not username_validation.is_valid_format(username):
+        return {"valid": False, "reason": "format"}
+
+    if username:
+        with SessionLocal() as session:
+            existing = get_user_by_username(session, username)
+            if existing is not None and existing.id != current_user.id:
+                return {"valid": False, "reason": "taken"}
+
+    return {"valid": True, "reason": None}
+
+
 @router.post("/signup", response_model=AccessTokenResponse)
 def signup_route(body: SignupRequest, response: Response):
     """Creates the account and starts the session in one call - the
@@ -80,34 +119,6 @@ def signup_route(body: SignupRequest, response: Response):
             raise HTTPException(status_code=400, detail=str(e))
 
     return _issue_tokens(response, user.id)
-
-
-# TODO(otp): the two-step signup flow (email a 6-digit code, verify it,
-# then create the account) these backed - disabled in favor of
-# POST /signup above. Revive alongside accounts/service.py's
-# start_email_signup()/verify_email_signup() and accounts/schemas.py's
-# SignupStartRequest/SignupVerifyRequest.
-# @router.post("/signup/start")
-# def signup_start_route(body: SignupStartRequest):
-#     with SessionLocal() as session:
-#         try:
-#             code = start_email_signup(session, body.email, body.password)
-#         except ValueError as e:
-#             raise HTTPException(status_code=400, detail=str(e))
-#
-#     send_otp_email(body.email, code)
-#     return {"sent": True}
-#
-#
-# @router.post("/signup/verify", response_model=AccessTokenResponse)
-# def signup_verify_route(body: SignupVerifyRequest, response: Response):
-#     with SessionLocal() as session:
-#         try:
-#             user = verify_email_signup(session, body.email, body.code)
-#         except ValueError as e:
-#             raise HTTPException(status_code=400, detail=str(e))
-#
-#     return _issue_tokens(response, user.id)
 
 
 @router.post("/login", response_model=AccessTokenResponse)
@@ -183,11 +194,43 @@ def logout_route(response: Response):
     return {"detail": "Logged out"}
 
 
+def _user_out(user: User) -> UserOut:
+    return UserOut(
+        id=str(user.id),
+        email=user.email,
+        is_active=user.is_active,
+        created_at=user.created_at.isoformat(),
+        username=get_username(user),
+        f_name=get_f_name(user),
+        l_name=get_l_name(user),
+        profile_photo=get_profile_photo(user),
+        bio=get_bio(user),
+        lifetime_steps=get_lifetime_steps(user),
+        postcards_sum=get_postcards_sum(user),
+        member_since=get_member_since(user).isoformat(),
+    )
+
+
 @router.get("/me", response_model=UserOut)
 def me_route(current_user: User = Depends(get_current_user)):
-    return UserOut(
-        id=str(current_user.id),
-        email=current_user.email,
-        is_active=current_user.is_active,
-        created_at=current_user.created_at.isoformat(),
-    )
+    return _user_out(current_user)
+
+
+@router.patch("/me", response_model=UserOut)
+def update_me_route(body: ProfileUpdateRequest, current_user: User = Depends(get_current_user)):
+    with SessionLocal() as session:
+        user = get_user_by_id(session, current_user.id)
+        if body.username is not None:
+            try:
+                update_username(session, user, body.username)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+        if body.f_name is not None:
+            set_f_name(session, user, body.f_name)
+        if body.l_name is not None:
+            set_l_name(session, user, body.l_name)
+        if body.bio is not None:
+            set_user_bio(session, user, body.bio)
+        if body.profile_photo is not None:
+            set_profile_photo(session, user, body.profile_photo)
+        return _user_out(user)

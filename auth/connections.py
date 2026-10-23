@@ -93,7 +93,15 @@ def get_active_connection(session: Session, user_id, for_update: bool = False) -
     if for_update:
         query = query.with_for_update()
     connection = query.one_or_none()
-    if connection is None:
+    if connection is None or connection.access_token is None or connection.refresh_token is None:
+        # The token check catches a row whose stored tokens can't be
+        # decrypted under the current TOKEN_ENCRYPTION_KEY (see
+        # database/encryption.py's EncryptedString) - upsert_connection_
+        # from_tokens() and disconnect() are the only writers, and
+        # neither ever leaves an "active" row with a null token, so None
+        # here means unreadable, not legitimately empty. Treating it the
+        # same as "no connection" is correct either way: the stored
+        # credentials are unusable, and the fix is identical (reconnect).
         raise RuntimeError("No active Google Health connection for this user - they need to click Connect first.")
     return connection
 

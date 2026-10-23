@@ -9,6 +9,7 @@
 
 import json
 import math
+import mimetypes
 import os
 import queue
 import traceback
@@ -23,7 +24,16 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.middleware.gzip import GZipMiddleware
 
-from travel_logic.coordinates import Coordinates
+# Python's mimetypes module resolves this from the host's system mime
+# database, which the slim Debian base image used for the production
+# container doesn't ship with a .webp entry - StaticFiles below would
+# otherwise serve frontend/public/hero's real *.webp bytes correctly but
+# labeled as application/octet-stream (confirmed in that container; the
+# usual macOS/Linux dev machine already resolves this correctly, so the
+# gap is image-specific, not code-specific).
+mimetypes.add_type("image/webp", ".webp")
+
+from travel_logic.dataclasses.coordinates import Coordinates
 from travel_logic.geocoder import create_geocoder
 from travel_logic.route_service import OSRMWalkingRouteService
 from travel_logic.route_validation import RouteUnavailable, validate_walking_route
@@ -82,18 +92,18 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
     still the right fallback for whatever's next, known cause or not."""
     print(f"⚠️  Unhandled error on {request.method} {request.url.path}:\n{traceback.format_exc()}")
     return JSONResponse({"error": "Something went wrong on our end. Please try again."}, status_code=500)
-# Local dev only (uvicorn serving this file directly): frontend/dist
-# exists because `npm run build` was run locally. In production,
-# vercel.json's own routes serve /assets, /images, and everything else
-# that isn't /api, /auth, or /notifications straight from the
-# @vercel/static-build output - this Python function never even sees
-# those requests there, and frontend/dist doesn't exist in its own
-# bundle (it's gitignored, and includeFiles can't pull in another
-# builder's generated output). StaticFiles(directory=...) raises at
-# import time if the directory is missing, which crashed every route in
-# production before this guard - see the postmortem: frontend/dist
-# genuinely never existed in the Python function's filesystem, so the
-# whole app failed to even import.
+# On Vercel, frontend/dist exists only in local dev (`npm run build`) -
+# vercel.json's own routes serve /assets, /images, /hero, and everything
+# else that isn't /api, /auth, or /notifications straight from the
+# @vercel/static-build output there, so this Python function never even
+# sees those requests in that deployment. On the single-container Docker/
+# Cloud Run image (Dockerfile), there is no separate static-routing layer
+# - frontend/dist is built into the image and these mounts are what
+# actually serve it in production. StaticFiles(directory=...) raises at
+# import time if the directory is missing, which crashed every route on
+# Vercel before this guard - see the postmortem: frontend/dist genuinely
+# never existed in the Python function's filesystem there, so the whole
+# app failed to even import. Kept defensive here for the same reason.
 if (FRONTEND_DIST / "assets").is_dir():
     app.mount("/assets", StaticFiles(directory=FRONTEND_DIST / "assets"), name="frontend-assets")
 if (FRONTEND_DIST / "images").is_dir():
@@ -101,6 +111,12 @@ if (FRONTEND_DIST / "images").is_dir():
     # hero photos (frontend/public/images/) - lands at dist's root next
     # to assets/, same as /assets above.
     app.mount("/images", StaticFiles(directory=FRONTEND_DIST / "images"), name="frontend-images")
+if (FRONTEND_DIST / "hero").is_dir():
+    # frontend/src/components/PhotoCollage.tsx's landing-page photos
+    # (frontend/public/hero/*.webp) - vercel.json routes /hero/(.*)
+    # separately from /images/(.*), so this needs its own mount rather
+    # than folding into the /images one above.
+    app.mount("/hero", StaticFiles(directory=FRONTEND_DIST / "hero"), name="frontend-hero")
 
 _geocoder = create_geocoder()
 _router = OSRMWalkingRouteService()
@@ -429,11 +445,13 @@ def delete_journeys(body: JourneyDeleteBulkRequest, current_user: User = Depends
 # prefixes so a genuinely missing API route 404s instead of silently
 # getting HTML back.
 #
-# In production this route is effectively dead code - vercel.json's own
-# routes send every non-API path straight to the @vercel/static-build
-# output before it ever reaches this Python function. It's what local
-# dev (uvicorn serving this file directly, no Vercel routing layer) uses
-# instead.
+# On Vercel this route is effectively dead code in production -
+# vercel.json's own routes send every non-API path straight to the
+# @vercel/static-build output before it ever reaches this Python
+# function. Local dev (uvicorn serving this file directly) and the
+# single-container Docker/Cloud Run image both have no such routing
+# layer in front of this app, so this is the route that actually serves
+# react-router's client-side paths there.
 @app.get("/{full_path:path}")
 def spa(full_path: str):
     if full_path.startswith(API_PREFIXES):
