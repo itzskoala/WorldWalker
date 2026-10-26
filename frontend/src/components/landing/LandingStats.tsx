@@ -1,7 +1,7 @@
 const STATS = [
   { value: '2M+', label: 'Steps' },
-  { value: '1K+', label: 'Postcards sent' },
-  { value: '20', label: 'Users' },
+  { value: '195', label: 'Countries' },
+  { value: '7', label: 'Continents' },
 ]
 
 export function LandingStats() {

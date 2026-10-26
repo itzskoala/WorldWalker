@@ -16,7 +16,16 @@ const NAV_LINKS = [
   { label: 'Pricing', to: '/pricing' },
 ]
 
-export function MarketingHeader() {
+interface MarketingHeaderProps {
+  // LandingPage.tsx passes these so its header's Sign in/Sign up open
+  // AuthModal.tsx in place instead of navigating away - every other page
+  // that renders this header has no modal mounted, so it falls back to
+  // real links to /login and /signup.
+  onSignIn?: () => void
+  onSignUp?: () => void
+}
+
+export function MarketingHeader({ onSignIn, onSignUp }: MarketingHeaderProps) {
   const { status, user } = useAuth()
   const signedIn = status === 'authenticated' && user
 
@@ -46,12 +55,24 @@ export function MarketingHeader() {
             </Link>
           ) : (
             <>
-              <Link to="/login" className="marketing-nav-link">
-                Sign in
-              </Link>
-              <Link to="/signup" className="btn-header-cta">
-                Sign up
-              </Link>
+              {onSignIn ? (
+                <button type="button" className="marketing-nav-link" onClick={onSignIn}>
+                  Sign in
+                </button>
+              ) : (
+                <Link to="/login" className="marketing-nav-link">
+                  Sign in
+                </Link>
+              )}
+              {onSignUp ? (
+                <button type="button" className="btn-header-cta" onClick={onSignUp}>
+                  Sign up
+                </button>
+              ) : (
+                <Link to="/signup" className="btn-header-cta">
+                  Sign up
+                </Link>
+              )}
             </>
           )}
         </div>

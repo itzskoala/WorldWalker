@@ -122,7 +122,7 @@ export function EmailAlertsPanel({ open, onClose }: EmailAlertsPanelProps) {
                 <input
                   id="email-config-username"
                   type="email"
-                  placeholder="you@example.com"
+                  placeholder="Enter your email"
                   autoComplete="off"
                   required
                   value={username}

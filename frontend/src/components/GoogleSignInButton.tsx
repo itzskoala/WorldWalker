@@ -54,16 +54,41 @@ export function GoogleSignInButton({ clientId, mode, onCredential }: GoogleSignI
         use_fedcm_for_button: true,
       })
 
+      // GIS's size:'large' always renders a fixed 40px-tall button -
+      // there's no height option, confirmed live via its own rendered
+      // DOM. .auth-modal-submit (Log in/Join for free) is 52px, so a
+      // plain render here reads as a visibly smaller, less-round pill
+      // sitting in a taller box. Rendering into an inner div pre-sized
+      // for GIS's 40px and scaling that div up to 52px (uniformly, so
+      // its border-radius scales with it and stays a true pill) is the
+      // only way to actually match the two buttons' shape.
+      const GOOGLE_BUTTON_HEIGHT = 40
+      const TARGET_HEIGHT = 52
+      const scale = TARGET_HEIGHT / GOOGLE_BUTTON_HEIGHT
+      // offsetWidth, not getBoundingClientRect().width - the modal's own
+      // CSS entrance animation (.auth-modal's scale(0.9) -> scale(1))
+      // means this can run mid-transform, and getBoundingClientRect
+      // returns the painted/transformed box, not the laid-out one -
+      // offsetWidth is the real layout width regardless of any ancestor
+      // transform, confirmed live (a stale ~90%-scale rect was what made
+      // this button render narrower than the rest of the row).
+      const containerWidth = Math.round(container.offsetWidth) || 352
+      // 400 is GIS's own max width - clamp rather than let a value above
+      // it be silently ignored/misrendered.
+      const renderWidth = Math.min(400, Math.round(containerWidth / scale))
+
       container.innerHTML = ''
-      window.google.accounts.id.renderButton(container, {
+      const inner = document.createElement('div')
+      inner.style.transform = `scale(${scale})`
+      container.appendChild(inner)
+
+      window.google.accounts.id.renderButton(inner, {
         type: 'standard',
         theme: 'outline',
         size: 'large',
-        shape: 'rectangular',
+        shape: 'pill',
         text: mode === 'signup' ? 'signup_with' : 'signin_with',
-        // 400 is GIS's own max - clamp rather than let a value above it
-        // be silently ignored/misrendered.
-        width: Math.min(400, Math.round(container.getBoundingClientRect().width) || 352),
+        width: renderWidth,
       })
     }
 

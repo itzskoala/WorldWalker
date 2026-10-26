@@ -32,6 +32,13 @@
     <!-- Montserrat - scoped to .profile-page only (style.css), per the
          profile redesign's own request for a distinct typeface there. -->
     <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+    <!-- Roboto - AuthModal.tsx's custom Apple fallback button
+         (.auth-option-btn) uses this, not Montserrat, so its label reads
+         in the same typeface as Google's own rendered Sign-in button
+         sitting right above it (GoogleSignInButton.tsx renders Google's
+         real widget, which always sets its own Roboto internally - this
+         is us matching that, not Google reading ours). -->
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500&display=swap" rel="stylesheet" />
     <!-- MapLibre's own CSS is imported from the npm package instead of a
          CDN (src/components/tripMap.ts) - keeps the JS/CSS versions in
          lockstep, unlike the vanilla app's CDN pairing. -->

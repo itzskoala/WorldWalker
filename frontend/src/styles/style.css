@@ -4045,12 +4045,16 @@ button.profile-section-chevron.is-link:hover {
    Also doubles as the plain-text "Sign in" link's style (no pill) - see
    MarketingHeader.tsx. */
 .marketing-nav-link {
+  background: none;
+  border: none;
+  padding: 0 0 2px;
+  font: inherit;
   color: var(--text);
   font-weight: 600;
   font-size: 0.95rem;
   text-decoration: none;
-  padding-bottom: 2px;
   border-bottom: 2px solid transparent;
+  cursor: pointer;
   transition: border-color 0.15s ease;
 }
 
@@ -4087,19 +4091,22 @@ button.profile-section-chevron.is-link:hover {
 }
 
 /* Sign Up - squared-off with rounded corners (not a pill/circle). Orange
-   is reserved for exactly this plus Start Walking and the journey card's
-   progress fill, nowhere else. */
+   is still reserved for Start Walking and the journey card's progress
+   fill - this one button is a deliberate exception, a lavender that pops
+   against the rest of the (otherwise orange/monochrome) header. */
 .btn-header-cta {
   display: inline-flex;
   align-items: center;
+  font: inherit;
   border: none;
   border-radius: 10px;
   padding: 8px 18px;
-  color: var(--orange-text);
+  color: #ffffff;
   font-weight: 700;
   font-size: 0.95rem;
   text-decoration: none;
-  background: var(--orange);
+  background: #9b5de5;
+  cursor: pointer;
   transition: filter 0.15s ease;
 }
 
@@ -4189,6 +4196,19 @@ button.profile-section-chevron.is-link:hover {
    screenshot's *structure* - every color and the mark itself are this
    app's own, never the reference's branding. */
 
+@keyframes auth-modal-backdrop-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes auth-modal-in {
+  from {
+    opacity: 0;
+    transform: translateY(24px) scale(0.9);
+  }
+}
+
 .auth-modal-backdrop {
   position: fixed;
   inset: 0;
@@ -4200,6 +4220,7 @@ button.profile-section-chevron.is-link:hover {
   background: rgba(10, 25, 47, 0.55);
   backdrop-filter: blur(2px);
   -webkit-backdrop-filter: blur(2px);
+  animation: auth-modal-backdrop-in 0.25s ease-out;
 }
 
 .auth-modal {
@@ -4213,6 +4234,20 @@ button.profile-section-chevron.is-link:hover {
   background: var(--bg);
   border: 1px solid var(--border);
   box-shadow: 0 24px 60px -20px rgba(10, 25, 47, 0.35);
+  font-family: inherit;
+  --hover-shadow: 0 2px 6px rgba(0, 0, 0, 0.35), 0 6px 16px rgba(0, 0, 0, 0.3);
+  animation: auth-modal-in 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .auth-modal-backdrop,
+  .auth-modal {
+    animation: none;
+  }
+}
+
+.auth-modal button {
+  font-family: inherit;
 }
 
 .auth-modal-header {
@@ -4222,33 +4257,47 @@ button.profile-section-chevron.is-link:hover {
   margin-bottom: 16px;
 }
 
-.auth-modal-badge {
+.auth-modal-avatar {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  overflow: hidden;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 44px;
-  height: 44px;
-  border-radius: 12px;
-  border: 1px solid var(--border);
-  color: var(--teal);
+  background: var(--field-border);
+  color: var(--text);
+  font-weight: 700;
+  font-size: 1.4rem;
+}
+
+.auth-modal-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 .auth-modal-close {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 38px;
-  height: 38px;
-  border-radius: 12px;
-  border: 1.5px solid var(--border);
+  width: 44px;
+  height: 44px;
+  border: none;
+  border-radius: 10px;
   background: transparent;
   color: var(--text);
   cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.auth-modal-close .icon {
+  width: 26px;
+  height: 26px;
 }
 
 .auth-modal-close:hover {
-  border-color: var(--teal);
-  color: var(--teal);
+  background: rgba(0, 0, 0, 0.08);
 }
 
 .auth-modal-title {
@@ -4292,16 +4341,110 @@ button.profile-section-chevron.is-link:hover {
   font-family: inherit;
 }
 
+.auth-modal .auth-field input[readonly] {
+  background: var(--field-bg);
+  color: var(--text-muted);
+  cursor: default;
+}
+
+.auth-not-you {
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-weight: 600;
+  color: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.auth-modal .auth-forgot-password {
+  margin-top: -6px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #7c3aed;
+  text-decoration: none;
+}
+
+.auth-modal .auth-forgot-password:hover {
+  text-decoration: none;
+}
+
 .auth-modal .auth-field input:focus {
   outline: none;
-  border-color: var(--teal);
-  box-shadow: 0 0 0 3px rgba(0, 120, 107, 0.15);
+  border-color: #000000;
+  box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.08);
 }
 
 .auth-modal .field-error {
   margin: 0;
   font-size: 0.78rem;
   color: #dc2626;
+}
+
+.password-input {
+  position: relative;
+}
+
+.password-input input {
+  width: 100%;
+}
+
+.auth-modal .password-input input {
+  padding-right: 44px;
+}
+
+.password-toggle {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink-faint);
+  cursor: pointer;
+}
+
+.password-toggle:hover {
+  color: var(--text);
+}
+
+.password-strength {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.password-strength-track {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--field-border);
+  overflow: hidden;
+}
+
+.password-strength-fill {
+  height: 100%;
+  border-radius: 999px;
+  transition: width 0.2s ease, background-color 0.2s ease;
+}
+
+.password-strength-label {
+  margin: 0;
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+.password-strength-hint {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--ink-faint);
 }
 
 .auth-modal .auth-remember {
@@ -4317,11 +4460,24 @@ button.profile-section-chevron.is-link:hover {
   accent-color: var(--teal);
 }
 
-.auth-modal-submit {
+.auth-modal .auth-modal-submit {
   width: 100%;
   justify-content: center;
   height: 52px;
   font-size: 1rem;
+  background: #000000;
+  color: #ffffff;
+  box-shadow: none;
+  transition: box-shadow 0.15s ease;
+}
+
+.auth-modal .auth-modal-submit:hover:not(:disabled) {
+  box-shadow: var(--hover-shadow);
+}
+
+.auth-modal .auth-modal-submit:disabled {
+  background: var(--field-border);
+  color: var(--text-muted);
 }
 
 .auth-modal-divider {
@@ -4348,34 +4504,49 @@ button.profile-section-chevron.is-link:hover {
   gap: 10px;
 }
 
-/* GoogleSignInButton/AppleSignInButton paint their own real
-   provider-branded button graphics inside these containers when
-   configured - just sizing/layout here, not their visible style. The
-   unconfigured Apple fallback (.auth-option-btn - no Services ID in
-   this environment, see AppleSignInButton.tsx's own docstring) is the
-   one case this wrapper IS the visible button, so it gets full styling. */
+/* GoogleSignInButton paints Google's own rendered widget inside this
+   container when configured (its border/weight/font are Google's, not
+   ours to restyle). The unconfigured Apple fallback (.auth-option-btn -
+   no Services ID in this environment, see AppleSignInButton.tsx's own
+   docstring) is a button we paint ourselves, so its border weight,
+   corner radius, icon placement, and text weight are tuned here to read
+   as the same button style as Google's real one sitting next to it. */
 .auth-modal .auth-option-google,
 .auth-modal .auth-option-apple,
 .auth-modal .auth-option-btn {
+  position: relative;
   width: 100%;
-  min-height: 44px;
+  min-height: 52px;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
 }
 
 .auth-modal .auth-option-btn {
-  border: 1.5px solid var(--border);
-  border-radius: 12px;
+  height: 52px;
+  border: 1px solid rgba(0, 0, 0, 0.18);
+  border-radius: 999px;
   background: var(--bg);
-  color: var(--text);
-  font-weight: 700;
-  font-size: 0.9rem;
+  color: #3c4043;
+  font-family: "Roboto", -apple-system, "Segoe UI", sans-serif;
+  font-weight: 500;
+  font-size: 0.85rem;
+  transition: box-shadow 0.15s ease;
+}
+
+.auth-modal .auth-option-btn:hover {
+  box-shadow: var(--hover-shadow);
+}
+
+.auth-modal .auth-option-btn .icon {
+  position: absolute;
+  left: 14px;
 }
 
 .auth-modal .auth-option-label {
-  color: var(--text);
+  width: 100%;
+  text-align: center;
+  color: inherit;
 }
 
 .auth-modal-switch {
@@ -4385,24 +4556,27 @@ button.profile-section-chevron.is-link:hover {
   color: var(--text-muted);
 }
 
-.auth-modal-switch-link {
+.auth-modal .auth-modal-switch-link {
   border: none;
   background: none;
   padding: 0;
   font: inherit;
   font-weight: 700;
-  color: var(--teal);
+  color: #000000;
   text-decoration: underline;
   cursor: pointer;
 }
 
-.auth-modal .auth-terms {
-  margin-top: 4px;
+.auth-modal .auth-modal-terms {
+  margin: 4px 0 0;
+  font-size: 0.7rem;
+  line-height: 1.5;
   color: var(--text-muted);
 }
 
 .auth-modal .auth-terms-link {
-  color: var(--teal);
+  color: var(--text-muted);
+  text-decoration: underline;
 }
 
 .auth-modal .auth-error {

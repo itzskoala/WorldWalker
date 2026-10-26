@@ -15,9 +15,11 @@ import { Link, useNavigate } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
 import { fetchPublicConfig } from '../api/configApi'
 import { GoogleSignInButton } from '../components/GoogleSignInButton'
-import { AppleSignInButton } from '../components/AppleSignInButton'
+// import { AppleSignInButton } from '../components/AppleSignInButton' - no
+// Apple Services ID configured yet, see AppleSignInButton.tsx's own
+// docstring. Re-enable once that's wired up.
 import { MarketingHeader } from '../components/MarketingHeader'
-import { PasswordStrengthMeter } from '../components/PasswordStrengthMeter'
+import { PasswordField } from '../components/PasswordField'
 
 interface AuthPageProps {
   mode: 'login' | 'signup'
@@ -36,11 +38,9 @@ export function AuthPage({ mode }: AuthPageProps) {
   }, [status, navigate])
 
   const [googleClientId, setGoogleClientId] = useState('')
-  const [appleClientId, setAppleClientId] = useState('')
   useEffect(() => {
     fetchPublicConfig().then((config) => {
       setGoogleClientId(config.google_client_id)
-      setAppleClientId(config.apple_client_id)
     })
   }, [])
 
@@ -134,7 +134,7 @@ export function AuthPage({ mode }: AuthPageProps) {
             {!emailStep ? (
               <div className="auth-options">
                 <GoogleSignInButton clientId={googleClientId} mode={mode} onCredential={handleGoogleCredential} />
-                <AppleSignInButton clientId={appleClientId} mode={mode} />
+                {/* <AppleSignInButton clientId={appleClientId} mode={mode} /> */}
                 <button type="button" className="btn-square-primary" onClick={() => setEmailStep(true)}>
                   {isSignup ? 'Sign Up With Email' : 'Sign In With Email'}
                 </button>
@@ -158,17 +158,14 @@ export function AuthPage({ mode }: AuthPageProps) {
 
                 <div className="auth-field">
                   <label htmlFor="auth-password">Password</label>
-                  <input
+                  <PasswordField
                     id="auth-password"
-                    type="password"
                     autoComplete={isSignup ? 'new-password' : 'current-password'}
                     placeholder={isSignup ? 'Create a Password' : 'Your Password'}
-                    minLength={8}
-                    required
                     value={password}
-                    onChange={(e) => setPassword(e.target.value)}
+                    onChange={setPassword}
+                    showStrengthMeter={isSignup}
                   />
-                  {isSignup && <PasswordStrengthMeter password={password} />}
                 </div>
 
                 {!isSignup && (
@@ -191,8 +188,8 @@ export function AuthPage({ mode }: AuthPageProps) {
             {error && <p className="auth-error">{error}</p>}
 
             <p className="auth-terms">
-              By continuing, you are agreeing to our <span className="auth-terms-link">Terms of Service</span> and{' '}
-              <span className="auth-terms-link">Privacy Policy</span>.
+              By continuing, you are agreeing to our <Link to="/terms" className="auth-terms-link">Terms of Service</Link> and{' '}
+              <Link to="/privacy" className="auth-terms-link">Privacy Policy</Link>.
             </p>
           </div>
         </div>

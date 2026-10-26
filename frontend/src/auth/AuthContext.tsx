@@ -10,6 +10,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState, t
 import * as authApi from '../api/authApi'
 import type { ProfileUpdate, UsernameValidation } from '../api/authApi'
 import { onUnauthorized, refreshAccessToken } from '../api/httpClient'
+import { rememberLastUser } from './lastUser'
 import type { AuthStatus, User } from '../types/user'
 
 interface AuthContextValue {
@@ -34,6 +35,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const me = await authApi.fetchMe()
     setUser(me)
     setStatus('authenticated')
+    rememberLastUser(me)
   }, [])
 
   // Once on mount: try to restore a session from the refresh cookie left

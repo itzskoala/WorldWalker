@@ -24,6 +24,15 @@ export function TypewriterHeadline({ prefix, variants }: TypewriterHeadlineProps
     let variantIndex = 0
     let timeoutId: number
 
+    function nextVariantIndex(current: number): number {
+      if (variants.length <= 1) return 0
+      let next = current
+      while (next === current) {
+        next = Math.floor(Math.random() * variants.length)
+      }
+      return next
+    }
+
     function type(full: string, pos: number) {
       setText(full.slice(0, pos))
       if (pos < full.length) {
@@ -35,7 +44,7 @@ export function TypewriterHeadline({ prefix, variants }: TypewriterHeadlineProps
 
     function erase(full: string) {
       if (full.length <= prefix.length) {
-        variantIndex = (variantIndex + 1) % variants.length
+        variantIndex = nextVariantIndex(variantIndex)
         timeoutId = window.setTimeout(() => type(prefix + variants[variantIndex], prefix.length), PAUSE_MS)
         return
       }
