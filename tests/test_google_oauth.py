@@ -6,7 +6,7 @@
 
 import pytest
 
-from accounts import google_oauth
+from backend.accounts import google_oauth
 
 
 def test_verify_google_id_token_requires_google_signin_client_id(monkeypatch):

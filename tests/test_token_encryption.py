@@ -8,7 +8,7 @@
 from cryptography.fernet import Fernet
 from sqlalchemy import text
 
-from database.models import GoogleHealthConnection, User
+from backend.database.models import GoogleHealthConnection, User
 
 
 def _make_connection(db_session, provider_user_id, access_token, refresh_token):

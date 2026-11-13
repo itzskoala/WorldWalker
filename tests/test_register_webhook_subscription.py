@@ -9,7 +9,7 @@
 
 import pytest
 
-from auth import register_webhook_subscription as rws
+from backend.auth import register_webhook_subscription as rws
 
 
 # --- _resolve_public_url ---

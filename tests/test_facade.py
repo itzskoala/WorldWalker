@@ -5,19 +5,19 @@
 # moments. Journey state lives in Postgres now (database/trips.py), not an
 # in-memory dict - these tests seed an ActiveTrip row directly via
 # tests/conftest.py's seed_trip fixture, on the same transactional
-# db_session the patched_session fixture makes core.facade.SessionLocal
+# db_session the patched_session fixture makes backend.facade.SessionLocal
 # reuse, so every assertion here reads back real database state.
 
 from math import degrees
 
 import pytest
 
-from core.facade import TravelFacade, METERS_PER_MILE
-from core.observer_decorator.event_listener import EventListener
-from database import trips
-from travel_logic.dataclasses.coordinates import Coordinates
-from travel_logic.route_service import EARTH_RADIUS_METERS, Route, RoutePoint
-from services.fitbit_pydantic_schema import ExerciseData, TimeInterval, ExerciseMetricsSummary
+from backend.facade import TravelFacade, METERS_PER_MILE
+from backend.notifications.event_listener import EventListener
+from backend.database import trips
+from backend.travel_logic.dataclasses.coordinates import Coordinates
+from backend.travel_logic.route_service import EARTH_RADIUS_METERS, Route, RoutePoint
+from backend.services.health_pydantic_schema import ExerciseData, TimeInterval, ExerciseMetricsSummary
 
 MM_PER_MILE = 1_609_344
 TOTAL_DISTANCE_M = 100 * METERS_PER_MILE  # a round 100-mile route
@@ -36,7 +36,7 @@ class _RecordingListener(EventListener):
 
 def _route(total_distance_m: float) -> Route:
     """Two points on the equator, exactly total_distance_m apart by real
-    haversine distance. This matters now: core.facade rebuilds a Route
+    haversine distance. This matters now: backend.facade rebuilds a Route
     from a trip's stored {lat, lng} points via
     travel_logic.route_service.build_route(), which recomputes distance
     from real haversine between consecutive points - unlike the old
@@ -93,7 +93,7 @@ def facade(patched_session, user_id, seed_trip) -> TravelFacade:
 # wire it up end to end.
 
 def test_route_from_geometry_fast_path_matches_the_slow_path():
-    from core.facade import _route_from_geometry
+    from backend.facade import _route_from_geometry
 
     geometry = [{"lat": 44.9 + i * 0.001, "lng": -93.2 + i * 0.001} for i in range(50)]
     slow_route = _route_from_geometry(geometry)  # no "d" key anywhere -> build_route() fallback
@@ -128,7 +128,6 @@ def test_get_map_state_uses_persisted_distances_and_never_leaks_them_to_the_clie
         gender=None,
         stride_length_m=None,
         stride_by_type={},
-        round_trip=False,
     )
     trips.add_progress(patched_session, trip, TOTAL_DISTANCE_M / 2)
 
@@ -137,7 +136,7 @@ def test_get_map_state_uses_persisted_distances_and_never_leaks_them_to_the_clie
     assert state["distance_walked_m"] == pytest.approx(TOTAL_DISTANCE_M / 2)
     assert state["percent_complete"] == pytest.approx(50.0)
     # The persisted "d" bookkeeping field is an internal storage detail
-    # (see core/facade.py's _route_geometry_latlng()) - sending it back to
+    # (see backend/facade.py's _route_geometry_latlng()) - sending it back to
     # the client would just re-grow the same payload this exists to
     # shrink, for a field the frontend never reads.
     assert all(set(point.keys()) == {"lat", "lng"} for point in state["route_geometry"])
@@ -272,32 +271,6 @@ def test_landmark_event_notifies_with_name_and_percent(facade, user_id, patched_
     assert listener.received == ["🏁 Landmark reached: TownA (10.0% of the way there!)"]
 
 
-def test_checkpoint_reached_event_carries_user_and_checkpoint_details(
-    facade, user_id, patched_session, seed_checkpoint
-):
-    trip = _the_active_trip(patched_session, user_id)
-    trip.user.email = "walker@example.com"
-    seed_checkpoint(
-        trip, "TownA", distance_from_start_m=10.0 * METERS_PER_MILE,
-        checkpoint_number=1, description="A stop along the way in TownA.",
-    )
-    patched_session.commit()
-
-    listener = _RecordingListener()
-    facade.events.subscribe("checkpoint_reached", listener)
-
-    interval = TimeInterval(startTime="2026-09-08T09:00:00Z", endTime="2026-09-08T09:30:00Z")
-    facade.record_steps(user_id, 100_000, interval)  # far past mile 10 with the default stride
-
-    assert len(listener.received) == 1
-    event = listener.received[0]
-    assert event.user_id == user_id
-    assert event.user_name == "walker@example.com"
-    assert event.checkpoint_name == "TownA"
-    assert event.checkpoint_number == 1
-    assert event.description == "A stop along the way in TownA."
-
-
 def test_halfway_event_notifies_once_and_never_again(facade, user_id, patched_session):
     listener = _RecordingListener()
     facade.events.subscribe("halfway", listener)
@@ -320,18 +293,8 @@ def _start_journey_facade(monkeypatch, profile: dict) -> TravelFacade:
     f = TravelFacade()
     monkeypatch.setattr(f._geocoder, "geocode", lambda place: Coordinates(0, 0))
     monkeypatch.setattr(f._router, "get_walking_route", lambda start, end: _route(10.0))
-    monkeypatch.setattr("core.facade.get_profile", lambda user_id: profile)
+    monkeypatch.setattr("backend.facade.get_profile", lambda user_id: profile)
     return f
-
-
-def test_start_journey_stores_round_trip_but_route_stays_one_way(patched_session, user_id, monkeypatch):
-    f = _start_journey_facade(monkeypatch, {})
-
-    f.start_journey(user_id, "A", "B", round_trip=True)
-
-    trip = _the_active_trip(patched_session, user_id)
-    assert trip.round_trip is True
-    assert trip.total_distance_m == 10.0  # not doubled - flagged, not built this pass
 
 
 def test_start_journey_seeds_stride_from_the_real_google_health_profile(patched_session, user_id, monkeypatch):
@@ -355,7 +318,7 @@ def test_start_journey_falls_back_cleanly_with_no_connection(patched_session, us
 
     def _raise(user_id):
         raise RuntimeError("no active Google Health connection")
-    monkeypatch.setattr("core.facade.get_profile", _raise)
+    monkeypatch.setattr("backend.facade.get_profile", _raise)
 
     f.start_journey(user_id, "A", "B")
 
@@ -378,7 +341,7 @@ def test_start_journey_skips_geocoding_when_coordinates_are_already_known(patche
         raise ValueError(f"No match for '{place}'")
     monkeypatch.setattr(f._geocoder, "geocode", _explode)
     monkeypatch.setattr(f._router, "get_walking_route", lambda start, end: _route(10.0))
-    monkeypatch.setattr("core.facade.get_profile", lambda user_id: {})
+    monkeypatch.setattr("backend.facade.get_profile", lambda user_id: {})
 
     f.start_journey(
         user_id,
@@ -428,7 +391,7 @@ def test_finished_event_includes_destination_and_total_steps(facade, user_id, pa
 # --- lazy checkpoint-metadata pipeline: bootstrap, proximity lookahead, duplicate-job prevention, retries ---
 
 class _SynchronousExecutor:
-    """Stands in for core.facade's shared, process-wide
+    """Stands in for backend.facade's shared, process-wide
     _checkpoint_metadata_executor: .submit(fn, *args) runs fn immediately,
     in the calling thread, instead of handing it to a real background
     thread pool - so these tests can assert on the result deterministically,
@@ -456,7 +419,7 @@ class _FakeMetadataGeocoder:
 
 
 class _FakeMetadataDescriber:
-    """Callable fake for core.facade.generate_checkpoint_description
+    """Callable fake for backend.facade.generate_checkpoint_description
     (name, lat, lng) -> description - monkeypatched in directly below,
     since that's a lone function now, not an injected object."""
 
@@ -479,21 +442,21 @@ def _facade_with_synchronous_metadata_pipeline(monkeypatch, geocoder=None, descr
     resolution these tests trigger runs for real, inline, immediately -
     not off on a background thread a real test would never wait for."""
     f = TravelFacade()
-    monkeypatch.setattr("core.facade._checkpoint_metadata_executor", _SynchronousExecutor())
+    monkeypatch.setattr("backend.facade._checkpoint_metadata_executor", _SynchronousExecutor())
     f._geocoder = geocoder if geocoder is not None else _FakeMetadataGeocoder({(0.0, 0.0): "Somewhere"})
-    monkeypatch.setattr("core.facade.generate_checkpoint_description", describer if describer is not None else _FakeMetadataDescriber())
+    monkeypatch.setattr("backend.facade.generate_checkpoint_description", describer if describer is not None else _FakeMetadataDescriber())
     return f
 
 
 def test_bootstrap_checkpoint_metadata_resolves_only_the_initial_batch(patched_session, user_id, monkeypatch):
-    from core.facade import INITIAL_METADATA_BATCH
+    from backend.facade import INITIAL_METADATA_BATCH
 
     f = _facade_with_synchronous_metadata_pipeline(
         monkeypatch, geocoder=_FakeMetadataGeocoder({(0.0, 0.0): "Somewhere"}), describer=_FakeMetadataDescriber(),
     )
     monkeypatch.setattr(f._geocoder, "reverse_geocode_city", lambda coords: "Somewhere")
     monkeypatch.setattr(f._router, "get_walking_route", lambda start, end: _route(50_000.0))
-    monkeypatch.setattr("core.facade.get_profile", lambda user_id: {})
+    monkeypatch.setattr("backend.facade.get_profile", lambda user_id: {})
     state = f.start_journey(user_id, "A", "B")
 
     trip = _the_active_trip(patched_session, user_id)
@@ -510,12 +473,12 @@ def test_bootstrap_checkpoint_metadata_resolves_only_the_initial_batch(patched_s
 
 
 def test_proximity_reveal_resolves_metadata_for_a_lookahead_buffer_beyond_it(patched_session, user_id, monkeypatch):
-    from core.facade import METADATA_LOOKAHEAD
+    from backend.facade import METADATA_LOOKAHEAD
 
     f = _facade_with_synchronous_metadata_pipeline(monkeypatch)
     monkeypatch.setattr(f._geocoder, "reverse_geocode_city", lambda coords: "Somewhere")
     monkeypatch.setattr(f._router, "get_walking_route", lambda start, end: _route(2_000_000.0))  # long - many checkpoints
-    monkeypatch.setattr("core.facade.get_profile", lambda user_id: {})
+    monkeypatch.setattr("backend.facade.get_profile", lambda user_id: {})
     f.start_journey(user_id, "A", "B")
     trip = _the_active_trip(patched_session, user_id)
 
@@ -549,7 +512,7 @@ def test_ensure_checkpoint_metadata_is_safe_to_call_twice_for_the_same_checkpoin
     describer = _FakeMetadataDescriber()
     f = _facade_with_synchronous_metadata_pipeline(monkeypatch, geocoder=geocoder, describer=describer)
     monkeypatch.setattr(f._router, "get_walking_route", lambda start, end: _route(2_000.0))
-    monkeypatch.setattr("core.facade.get_profile", lambda user_id: {})
+    monkeypatch.setattr("backend.facade.get_profile", lambda user_id: {})
     f.start_journey(user_id, "A", "B")
     trip = _the_active_trip(patched_session, user_id)
 
@@ -570,7 +533,7 @@ def test_resolve_checkpoint_metadata_failure_releases_the_claim_for_a_later_retr
     f = _facade_with_synchronous_metadata_pipeline(monkeypatch, geocoder=geocoder, describer=describer)
     monkeypatch.setattr(f._geocoder, "reverse_geocode_city", _explode)
     monkeypatch.setattr(f._router, "get_walking_route", lambda start, end: _route(2_000.0))
-    monkeypatch.setattr("core.facade.get_profile", lambda user_id: {})
+    monkeypatch.setattr("backend.facade.get_profile", lambda user_id: {})
     f.start_journey(user_id, "A", "B")
     trip = _the_active_trip(patched_session, user_id)
 
@@ -593,7 +556,7 @@ def test_reveal_fires_a_checkpoint_updated_event_independent_of_metadata_status(
     # created (unlike a route short enough to fall inside the reveal
     # radius immediately).
     monkeypatch.setattr(f._router, "get_walking_route", lambda start, end: _route(2_000.0))
-    monkeypatch.setattr("core.facade.get_profile", lambda user_id: {})
+    monkeypatch.setattr("backend.facade.get_profile", lambda user_id: {})
     f.start_journey(user_id, "A", "B")
     trip = _the_active_trip(patched_session, user_id)
     assert trip.checkpoints[0].revealed_at is None

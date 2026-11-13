@@ -3,8 +3,8 @@
 # https://refactoring.guru/design-patterns/observer): subscribe/unsubscribe
 # per event type, notify() only reaches listeners subscribed to that type.
 
-from core.observer_decorator.event_manager import EventManager
-from core.observer_decorator.event_listener import EventListener
+from backend.notifications.event_manager import EventManager
+from backend.notifications.event_listener import EventListener
 
 
 class _RecordingListener(EventListener):

@@ -10,7 +10,7 @@
 
 from fastapi.testclient import TestClient
 
-from app import app
+from backend.app import app
 
 client = TestClient(app)
 
@@ -30,7 +30,7 @@ def test_index_route_has_no_database_dependency_at_all():
     # Stronger than mocking a call and checking it's unused: app.py
     # doesn't even import SessionLocal any more, so there is no session
     # object any page route could reach for even by accident.
-    import app as app_module
+    import backend.app as app_module
 
     assert not hasattr(app_module, "SessionLocal")
 

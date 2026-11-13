@@ -15,6 +15,18 @@ variable "service_name" {
   default     = "worldwalker"
 }
 
+variable "service_account_id" {
+  description = "Runtime service account ID"
+  type        = string
+  default     = "worldwalker-runtime"
+}
+
+variable "environment" {
+  description = "App environment name"
+  type        = string
+  default     = "production"
+}
+
 variable "repository_id" {
   description = "Artifact Registry repository ID"
   type        = string
@@ -73,4 +85,28 @@ variable "secret_env_vars" {
   description = "Map of application environment variable names to Secret Manager secret IDs"
   type        = map(string)
   default     = {}
+}
+
+variable "use_memorystore" {
+  description = "Switch REDIS_URL from the Upstash secret to a provisioned Memorystore instance"
+  type        = bool
+  default     = false
+}
+
+variable "redis_tier" {
+  description = "Memorystore service tier"
+  type        = string
+  default     = "BASIC"
+}
+
+variable "redis_memory_size_gb" {
+  description = "Memorystore instance memory size in GB"
+  type        = number
+  default     = 1
+}
+
+variable "vpc_connector_cidr" {
+  description = "CIDR range for the Serverless VPC Access connector reaching Memorystore"
+  type        = string
+  default     = "10.8.0.0/28"
 }

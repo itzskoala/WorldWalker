@@ -17,7 +17,7 @@ import uuid
 import httpx
 import pytest
 
-from services.google_health import client as google_health_client
+from backend.services.google_health import client as google_health_client
 
 FAKE_USER_ID = uuid.uuid4()
 
@@ -236,7 +236,7 @@ def test_current_access_token_resolves_this_specific_users_token(monkeypatch):
     # through - proving it passes the given user_id straight to
     # connections.get_valid_access_token (not an ambient lookup) is
     # enough; the scoping itself is proven in tests/test_connections.py.
-    from auth import connections
+    from backend.auth import connections
 
     calls = []
     monkeypatch.setattr(

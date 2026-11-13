@@ -5,37 +5,11 @@
 
 import uuid
 
-from data.intake import IntakeRequest, start_journey_from_intake
-from data import intake as intake_module
-from travel_logic.dataclasses.coordinates import Coordinates
+from backend.data.intake import IntakeRequest, start_journey_from_intake
+from backend.data import intake as intake_module
+from backend.travel_logic.dataclasses.coordinates import Coordinates
 
 A_USER_ID = uuid.uuid4()
-
-
-def test_round_trip_defaults_to_false():
-    assert IntakeRequest(from_place="Miami", to_place="Chicago", user_id=A_USER_ID).round_trip is False
-
-
-def test_start_journey_from_intake_forwards_round_trip(monkeypatch):
-    calls = []
-    monkeypatch.setattr(
-        intake_module.travel_facade, "start_journey",
-        lambda **kwargs: calls.append(kwargs) or {"ok": True},
-    )
-    intake = IntakeRequest(from_place="Miami", to_place="Chicago", round_trip=True, user_id=A_USER_ID)
-    result = start_journey_from_intake(intake)
-
-    assert result == {"ok": True}
-    assert calls == [{
-        "user_id": intake.user_id,
-        "from_place": "Miami",
-        "to_place": "Chicago",
-        "gender": None,
-        "stride_length_m": None,
-        "round_trip": True,
-        "from_coords": None,
-        "to_coords": None,
-    }]
 
 
 def test_start_journey_from_intake_forwards_resolved_coordinates(monkeypatch):

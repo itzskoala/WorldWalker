@@ -3,12 +3,12 @@
 # position generation (checkpoint-count curve, interpolated placement),
 # name resolution, reveal-radius generation - plus the checkpoint-
 # progress/filtering helpers. No real network calls anywhere here; that's
-# core/facade.py's job to wire up against the real Geocoder (see
+# backend/facade.py's job to wire up against the real Geocoder (see
 # tests/test_facade.py). Description resolution lives in
 # travel_logic/description_generator.py, not here.
 
 import pytest
-from travel_logic.checkpoints import (
+from backend.travel_logic.checkpoints import (
     Checkpoint,
     CheckpointProgress,
     _checkpoint_formula,
@@ -24,8 +24,8 @@ from travel_logic.checkpoints import (
     CHECKPOINT_REVEAL_RADIUS_MIN_M,
     CHECKPOINT_REVEAL_RADIUS_MAX_M,
 )
-from travel_logic.dataclasses.coordinates import Coordinates
-from travel_logic.route_service import Route, RoutePoint
+from backend.travel_logic.dataclasses.coordinates import Coordinates
+from backend.travel_logic.route_service import Route, RoutePoint
 
 
 class FakeGeocoder:

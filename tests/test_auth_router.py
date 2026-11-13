@@ -19,16 +19,18 @@
 # a real JWT/DB user, to keep this file's "no real database" approach.
 
 import uuid
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from accounts.dependencies import get_current_user
-from auth import connections, google_health_auth, oauth_state
-from auth import router as router_module
-from auth.router import router
-from database.models import User
+from backend.accounts.dependencies import get_current_user
+from backend.auth import connections, google_health_auth, oauth_state
+from backend.api.auth import router as router_module
+from backend.api.auth.router import router
+from backend.database import trips
+from backend.database.models import User
 
 app = FastAPI()
 app.include_router(router)
@@ -71,11 +73,13 @@ def _mock_valid_state(monkeypatch, user_id: uuid.UUID | None = None) -> uuid.UUI
 
 
 def _mock_successful_db_write(monkeypatch):
-    """The success path also needs to save a connection before returning
-    200 - fake the save itself (SessionLocal is already faked by
-    _mock_valid_state)."""
     monkeypatch.setattr(router_module, "SessionLocal", lambda: _FakeSessionLocal())
-    monkeypatch.setattr(connections, "upsert_connection_from_tokens", lambda session, user_id, tokens: None)
+    monkeypatch.setattr(
+        connections,
+        "upsert_connection_from_tokens",
+        lambda session, user_id, tokens: SimpleNamespace(provider_user_id="provider-id"),
+    )
+    monkeypatch.setattr(trips, "get_active_trips", lambda session, user_id: [])
 
 
 # --- POST /auth/google/start ---
@@ -163,11 +167,13 @@ def test_callback_recovers_the_user_id_from_state_and_saves_that_users_connectio
     user_id = _mock_valid_state(monkeypatch)
     monkeypatch.setattr(google_health_auth, "exchange_code", lambda code: {"access_token": "AT"})
     save_calls = []
-    monkeypatch.setattr(
-        connections,
-        "upsert_connection_from_tokens",
-        lambda session, uid, tokens: save_calls.append((uid, tokens)),
-    )
+
+    def fake_save(session, uid, tokens):
+        save_calls.append((uid, tokens))
+        return SimpleNamespace(provider_user_id="provider-id")
+
+    monkeypatch.setattr(connections, "upsert_connection_from_tokens", fake_save)
+    monkeypatch.setattr(trips, "get_active_trips", lambda session, user_id: [])
 
     response = client.get("/auth/google/callback", params={"code": "abc", "state": "real-state"})
 

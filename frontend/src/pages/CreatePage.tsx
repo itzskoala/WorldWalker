@@ -5,7 +5,6 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { CreateHero } from '../components/create/CreateHero'
-import { TripTypeToggle, type TripType } from '../components/create/TripTypeToggle'
 import { RouteFieldsRow } from '../components/create/RouteFieldsRow'
 import { StartWalkingButton } from '../components/create/StartWalkingButton'
 import { prewarmMapAssets } from '../components/tripMap'
@@ -23,11 +22,10 @@ interface CreatePageProps {
   // (see AppShell.tsx's startWalking()), rather than this screen sitting
   // on a disabled button for however long that real geocoding/routing
   // call takes.
-  onStartWalking: (from: ResolvedPlace, to: ResolvedPlace, roundTrip: boolean) => void
+  onStartWalking: (from: ResolvedPlace, to: ResolvedPlace) => void
 }
 
 export function CreatePage({ onStartWalking }: CreatePageProps) {
-  const [tripType, setTripType] = useState<TripType>('round')
   const [from, setFromText] = useState('')
   const [to, setToText] = useState('')
   // The coordinates behind `from`/`to`, once a suggestion (or "Use current
@@ -224,7 +222,7 @@ export function CreatePage({ onStartWalking }: CreatePageProps) {
     // once that happens, so there's no "stuck disabled forever" case to
     // reset from.
     setStarting(true)
-    onStartWalking(fromLocation, toLocation, tripType === 'round')
+    onStartWalking(fromLocation, toLocation)
   }
 
   return (
@@ -233,8 +231,6 @@ export function CreatePage({ onStartWalking }: CreatePageProps) {
 
       <div className="screen-inner screen-inner-overlap">
         <section className="search-card" id="search-card" aria-label="Plan your walk">
-          <TripTypeToggle value={tripType} onChange={setTripType} />
-
           <RouteFieldsRow
             activeField={activeField}
             onActiveFieldChange={setActiveField}

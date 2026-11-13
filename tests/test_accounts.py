@@ -11,11 +11,11 @@ import jwt
 import pytest
 from fastapi.testclient import TestClient
 
-from accounts import security
-from accounts.google_oauth import GoogleTokenError
-from accounts.service import signup as create_user
-from app import app
-from database.models import User
+from backend.accounts import security
+from backend.accounts.google_oauth import GoogleTokenError
+from backend.accounts.service import signup as create_user
+from backend.app import app
+from backend.database.models import User
 
 
 @pytest.fixture
@@ -42,7 +42,7 @@ def _tampered_token(user_id: str) -> str:
 
 @pytest.fixture
 def skip_mx_lookup(monkeypatch):
-    monkeypatch.setattr("accounts.email_validation.has_mx_record", lambda domain: True)
+    monkeypatch.setattr("backend.accounts.email_validation.has_mx_record", lambda domain: True)
 
 
 def test_signup_creates_the_user_and_returns_tokens(patched_session, client, skip_mx_lookup):
@@ -84,7 +84,7 @@ def test_validate_email_rejects_bad_syntax(client):
 
 
 def test_validate_email_rejects_a_domain_with_no_mx_record(client, monkeypatch):
-    monkeypatch.setattr("accounts.email_validation.has_mx_record", lambda domain: False)
+    monkeypatch.setattr("backend.accounts.email_validation.has_mx_record", lambda domain: False)
     response = client.get("/auth/validate-email", params={"email": "walker@nowhere-really.invalid"})
     assert response.status_code == 200
     assert response.json() == {"valid": False}
@@ -250,14 +250,14 @@ def test_refresh_rejects_a_deactivated_user(patched_session, client, user_id):
 # there is what the route actually calls), never a real network call.
 
 def _stub_google_claims(monkeypatch, **claims):
-    monkeypatch.setattr("accounts.router.verify_google_id_token", lambda credential: claims)
+    monkeypatch.setattr("backend.api.accounts.router.verify_google_id_token", lambda credential: claims)
 
 
 def _stub_google_error(monkeypatch, message="Invalid or expired Google credential"):
     def _raise(credential):
         raise GoogleTokenError(message)
 
-    monkeypatch.setattr("accounts.router.verify_google_id_token", _raise)
+    monkeypatch.setattr("backend.api.accounts.router.verify_google_id_token", _raise)
 
 
 def test_google_auth_creates_a_new_user_on_first_sign_in(patched_session, client, monkeypatch):
@@ -365,8 +365,8 @@ def test_existing_users_trips_and_google_health_connection_stay_attached_after_l
     GoogleHealthConnection already on it - gives it a password, logs in,
     and confirms /auth/me resolves back to that exact row, with the
     connection and a seeded trip both still foreign-keyed to it."""
-    from travel_logic.route_service import Route, RoutePoint
-    from travel_logic.dataclasses.coordinates import Coordinates
+    from backend.travel_logic.route_service import Route, RoutePoint
+    from backend.travel_logic.dataclasses.coordinates import Coordinates
 
     user = patched_session.get(User, connected_user_id)
     user.email = "connected@example.com"

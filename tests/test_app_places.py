@@ -10,9 +10,9 @@
 
 from fastapi.testclient import TestClient
 
-import app as app_module
-from app import app
-from travel_logic.geocoder import Place
+import backend.app as app_module
+from backend.app import app
+from backend.travel_logic.geocoder import Place
 
 client = TestClient(app)
 

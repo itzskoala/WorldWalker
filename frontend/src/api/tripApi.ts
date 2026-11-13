@@ -57,7 +57,6 @@ export async function validateRoute(from: Coordinates, to: Coordinates, signal?:
 export interface StartJourneyRequest {
   from_place: string
   to_place: string
-  round_trip?: boolean
   // The coordinates PlaceAutocomplete already resolved from_place/to_place
   // to, if it did - lets app.py skip re-geocoding the free-text label (see
   // its JourneyStartRequest docstring on why that re-geocode can fail for

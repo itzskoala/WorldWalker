@@ -6,7 +6,7 @@
 
 import json
 
-from auth import google_health_auth
+from backend.auth import google_health_auth
 
 FAKE_CREDENTIALS = {"web": {
     "client_id": "cid",

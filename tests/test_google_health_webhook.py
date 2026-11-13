@@ -22,10 +22,10 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-import services.google_health.webhook as webhook_module
-from core.facade import travel_facade
-from database.models import GoogleHealthConnection, User
-from services.google_health.webhook import (
+import backend.services.google_health.webhook as webhook_module
+from backend.facade import travel_facade
+from backend.database.models import GoogleHealthConnection, User
+from backend.services.google_health.webhook import (
     router,
     process_health_data,
     process_notification,
@@ -33,8 +33,8 @@ from services.google_health.webhook import (
     BACKFILL_DATA_TYPES,
     WEBHOOK_SECRET,
 )
-from travel_logic.dataclasses.coordinates import Coordinates
-from travel_logic.route_service import EARTH_RADIUS_METERS, Route, RoutePoint
+from backend.travel_logic.dataclasses.coordinates import Coordinates
+from backend.travel_logic.route_service import EARTH_RADIUS_METERS, Route, RoutePoint
 
 app = FastAPI()
 app.include_router(router)
@@ -76,7 +76,7 @@ def _connect_new_user(session) -> uuid.UUID:
 def _route() -> Route:
     """Two points on the equator, exactly TOTAL_DISTANCE_M apart by real
     haversine distance - see tests/test_facade.py's _route() for why this
-    has to be exact now that core.facade rebuilds a Route from stored
+    has to be exact now that backend.facade rebuilds a Route from stored
     {lat, lng} points instead of trusting an explicit distance field."""
     end_lng = degrees(TOTAL_DISTANCE_M / EARTH_RADIUS_METERS)
     start, end = Coordinates(0.0, 0.0), Coordinates(0.0, end_lng)

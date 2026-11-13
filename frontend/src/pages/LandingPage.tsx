@@ -28,96 +28,68 @@ const HERO_VARIANTS = [
   'on your commute to work',
   'while you walk the dog',
   'from your treadmill',
-  'while you mow the lawn',
-  'in your house',
   'on your lunch break',
   'on your way to class',
   'while running errands',
-  'on your evening stroll',
   'during your morning walk',
-  'on your way to the store',
-  'while waiting for your laundry',
-  'between meetings',
-  'while pacing around your room',
   'on your way home',
+  'between meetings',
+  'around your neighborhood',
 
   // At home
-  'from your couch',
-  'from your bedroom',
-  'while cleaning your room',
-  'while cooking dinner',
-  'while doing the dishes',
-  'during your next treadmill session',
-  'while pacing on a phone call',
-  'while procrastinating',
+  'without leaving your house',
   'from your living room',
+  'from your couch',
+  'while doing the dishes',
+  'while cooking dinner',
+  'while pacing around your room',
+  'while your coffee brews',
 
   // Fitness
+  'while hitting your step goal',
   'on your daily run',
   'between gym sets',
-  'while warming up',
   'on your recovery walk',
   'while training for a 5K',
-  'on your next hike',
-  'during your cooldown',
-  'while hitting your step goal',
   'one step at a time',
   'while chasing a new PR',
+  'during your next treadmill session',
 
   // Social life
   'on your way to meet friends',
-  'while waiting for your date',
   'before the night begins',
-  'on your way to the bar',
   'from the club',
-  'before your next adventure',
   'while exploring with friends',
-  'on your way to the party',
   'during a late-night stroll',
+  'on your next date night',
 
-  // Travel & adventure
-  'without leaving your city',
-  'without booking a flight',
-  'from wherever you are',
+  // Travel & exploration
   'one country at a time',
   'one city at a time',
+  'without booking a flight',
+  'without packing a suitcase',
+  'from wherever you are',
+  'beyond your neighborhood',
   'across the seven seas',
   'from your own backyard',
-  'beyond your neighborhood',
-  'without packing a suitcase',
-  'on your next great adventure',
   'without leaving home',
-  'wherever your feet take you',
+  'to places you have never been',
+  'through streets around the globe',
+  'across continents and cultures',
 
   // Funny / unexpected
-  'while avoiding your responsibilities',
   'instead of doomscrolling',
-  'while pretending to be productive',
-  'during your existential crisis',
-  'while your food is in the oven',
-  'while waiting for your game to load',
-  'instead of touching grass',
-  'while stalking your step count',
-  'when you have nowhere to be',
-  'while escaping your group chat',
+  'while avoiding your responsibilities',
   'during your daily side quest',
-  'while your coffee brews',
-  'while the GPS does its thing',
-  'because sitting is overrated',
-  'while mindlessly pacing',
+  'while pretending to be productive',
+  'instead of touching grass',
   'during your main character moment',
-
-  // Short & punchy
-  'anywhere, anytime',
-  'at your own pace',
-  'from anywhere',
-  'wherever life takes you',
-  'with every step',
-  'at home or abroad',
-  'one step at a time',
-  'without going anywhere',
-  'whenever you feel like it',
-  'every step counts',
+  'because sitting is overrated',
+  'while escaping your group chat',
+  'when you have nowhere to be',
+  'while your game is loading',
+  'during your next existential crisis',
+  'while stalking your step count',
 ];
 export function LandingPage() {
   const [authModalMode, setAuthModalMode] = useState<AuthModalMode | null>(null)
@@ -133,7 +105,12 @@ export function LandingPage() {
             own full-width section below. */}
         <section className="landing-hero">
           <div className="landing-hero-copy">
-            <TypewriterHeadline prefix="Explore the World… " variants={HERO_VARIANTS} />
+            <TypewriterHeadline prefix="Walk the World… " variants={HERO_VARIANTS} />
+
+            <p className="landing-hero-mission">
+              Turn everyday movement into extraordinary journeys. See the world one step at a
+              time, discover new places and stories, and earn postcards along the way.
+            </p>
 
             <button type="button" className="landing-cta" onClick={() => setAuthModalMode('signup')}>
               Get started

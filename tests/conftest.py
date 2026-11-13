@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 
-from database.models import ActiveTrip, Base, GoogleHealthConnection, TripCheckpoint, User
+from backend.database.models import ActiveTrip, Base, GoogleHealthConnection, TripCheckpoint, User
 
 load_dotenv()
 
@@ -65,12 +65,12 @@ def db_session(db_engine):
 
 
 class _SameSessionEveryTime:
-    """Stands in for database.session.SessionLocal in tests: every
+    """Stands in for backend.database.session.SessionLocal in tests: every
     `with SameSessionEveryTime() as session:` call hands back this test's
     own db_session instead of opening a real new connection, and never
     closes it - db_session's own teardown (above) rolls the whole test's
-    transaction back. core/facade.py, services/google_health/webhook.py,
-    accounts/dependencies.py, and accounts/router.py each open their own
+    transaction back. backend/facade.py, backend/services/google_health/webhook.py,
+    backend/accounts/dependencies.py, and backend/api/accounts/router.py each open their own
     SessionLocal() internally, so all of them get patched to this by the
     patched_session fixture below - every DB write in a test then lands
     in the one transaction that fixture controls, never the real
@@ -97,12 +97,11 @@ class _SameSessionEveryTime:
 @pytest.fixture
 def patched_session(db_session, monkeypatch):
     same_session_every_time = _SameSessionEveryTime(db_session)
-    monkeypatch.setattr("core.facade.SessionLocal", same_session_every_time)
-    monkeypatch.setattr("services.google_health.webhook.SessionLocal", same_session_every_time)
-    monkeypatch.setattr("accounts.dependencies.SessionLocal", same_session_every_time)
-    monkeypatch.setattr("accounts.router.SessionLocal", same_session_every_time)
-    monkeypatch.setattr("core.observer_decorator.email_alerts_listener.SessionLocal", same_session_every_time)
-    monkeypatch.setattr("data.total_distance_db.SessionLocal", same_session_every_time)
+    monkeypatch.setattr("backend.facade.SessionLocal", same_session_every_time)
+    monkeypatch.setattr("backend.services.google_health.webhook.SessionLocal", same_session_every_time)
+    monkeypatch.setattr("backend.accounts.dependencies.SessionLocal", same_session_every_time)
+    monkeypatch.setattr("backend.api.accounts.router.SessionLocal", same_session_every_time)
+    monkeypatch.setattr("backend.data.total_distance_db.SessionLocal", same_session_every_time)
     return db_session
 
 
@@ -119,8 +118,8 @@ def auth_headers(patched_session):
     it resolves a real row (patched_session) instead of a bare User()
     stand-in, since callers here rely on current_user actually owning
     rows in the DB."""
-    from accounts.dependencies import get_current_user
-    from app import app
+    from backend.accounts.dependencies import get_current_user
+    from backend.app import app
 
     def _headers(user_id: uuid.UUID) -> dict:
         user = patched_session.get(User, user_id)
@@ -148,8 +147,8 @@ def user_id(patched_session) -> uuid.UUID:
 def connected_user_id(patched_session) -> uuid.UUID:
     """A User with an active GoogleHealthConnection (provider_user_id
     f"test-provider-{user_id}") - what a webhook notification's own
-    "user" field resolves through auth.connections.get_user_id_for_provider_user_id(),
-    or a real Google-Health-backed app.py/auth.router.py request needs."""
+    "user" field resolves through backend.auth.connections.get_user_id_for_provider_user_id(),
+    or a real Google-Health-backed backend/app.py/backend/api/auth/router.py request needs."""
     user = User()
     patched_session.add(user)
     patched_session.flush()  # assigns user.id before the connection below references it
@@ -190,8 +189,7 @@ def seed_trip(patched_session):
             stride_by_type={},
             workout_intervals=[],
             milestones_notified=[],
-            round_trip=False,
-            started_at=datetime.now(timezone.utc),
+            started_at=datetime(2020, 1, 1, tzinfo=timezone.utc),
         )
         patched_session.add(trip)
         patched_session.commit()
@@ -217,7 +215,7 @@ def seed_checkpoint(patched_session):
             distance_from_start_m=distance_from_start_m,
             description=description,
             # Always seeded with a real name already - nothing left for
-            # core/facade.py's checkpoint-metadata pipeline to resolve, so
+            # backend/facade.py's checkpoint-metadata pipeline to resolve, so
             # this must start "ready", not the model's own "pending"
             # default (which would make a proximity-reveal during a test
             # claim this checkpoint and submit it to the real background

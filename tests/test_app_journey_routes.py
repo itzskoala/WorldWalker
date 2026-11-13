@@ -11,11 +11,11 @@ from datetime import datetime, timezone
 from fastapi.testclient import TestClient
 from sqlalchemy import event
 
-from app import app
-from core.facade import travel_facade
-from database.models import StepSyncLog, User
-from travel_logic.dataclasses.coordinates import Coordinates
-from travel_logic.route_service import Route, RoutePoint
+from backend.app import app
+from backend.facade import travel_facade
+from backend.database.models import StepSyncLog, User
+from backend.travel_logic.dataclasses.coordinates import Coordinates
+from backend.travel_logic.route_service import Route, RoutePoint
 
 client = TestClient(app)
 
@@ -49,7 +49,7 @@ def _mock_geocoding_and_routing(monkeypatch):
     monkeypatches/session have already been torn down."""
     monkeypatch.setattr(travel_facade._geocoder, "geocode", lambda place: Coordinates(0.0, 0.0))
     monkeypatch.setattr(travel_facade._router, "get_walking_route", lambda start, end: _short_route())
-    monkeypatch.setattr("core.facade.get_profile", lambda user_id: {})
+    monkeypatch.setattr("backend.facade.get_profile", lambda user_id: {})
     monkeypatch.setattr(travel_facade, "bootstrap_checkpoint_metadata", lambda trip_id: None)
 
 
@@ -122,7 +122,7 @@ def test_start_journey_succeeds_for_a_long_distance_route(user_id, auth_headers,
     break or slow down trip creation through the real endpoint."""
     monkeypatch.setattr(travel_facade._geocoder, "geocode", lambda place: Coordinates(30.3322, -81.6557))
     monkeypatch.setattr(travel_facade._router, "get_walking_route", lambda start, end: _long_distance_route())
-    monkeypatch.setattr("core.facade.get_profile", lambda user_id: {})
+    monkeypatch.setattr("backend.facade.get_profile", lambda user_id: {})
     monkeypatch.setattr(travel_facade, "bootstrap_checkpoint_metadata", lambda trip_id: None)
 
     response = client.post(
@@ -180,7 +180,7 @@ def test_start_journey_skips_geocoding_when_the_request_carries_resolved_coordin
         raise ValueError(f"No match for '{place}'")
     monkeypatch.setattr(travel_facade._geocoder, "geocode", _explode)
     monkeypatch.setattr(travel_facade._router, "get_walking_route", lambda start, end: _short_route())
-    monkeypatch.setattr("core.facade.get_profile", lambda user_id: {})
+    monkeypatch.setattr("backend.facade.get_profile", lambda user_id: {})
     # Same reason as _mock_geocoding_and_routing() above - the route's
     # checkpoints (positions only, blank names) get created for real;
     # this just stops the background metadata job that would otherwise
@@ -254,7 +254,7 @@ def test_journey_list_includes_total_steps_and_current_checkpoint(
     # ActiveTripCard (frontend/src/components/TripCard.tsx) needs these
     # two fields straight from the trips list - this used to mean
     # HomePage.tsx making a second, much more expensive full-state fetch
-    # per active trip (core/facade.py's _build_map_state(), a full route
+    # per active trip (backend/facade.py's _build_map_state(), a full route
     # rebuild) just to read them. list_trips() now computes both itself.
     trip = seed_trip(user_id, _short_route())
     seed_checkpoint(trip, "Midway", distance_from_start_m=5_000.0, checkpoint_number=1)
@@ -379,8 +379,8 @@ def test_unhandled_dependency_failure_returns_json_not_a_bare_crash(user_id, pat
     specific provisioning bug is fixed separately, but a future
     not-yet-imagined failure in a dependency must never regress back to a
     bare crash page."""
-    from accounts.dependencies import get_current_user
-    from app import app
+    from backend.accounts.dependencies import get_current_user
+    from backend.app import app
 
     def _boom():
         raise RuntimeError("simulated dependency failure")

@@ -44,7 +44,6 @@ export interface TripMapState {
   status: TripStatus
   from_place: string
   to_place: string
-  round_trip: boolean
   start: Coordinates
   end: Coordinates
   route_geometry: Coordinates[]
@@ -92,7 +91,6 @@ export interface TripSummary {
   status: TripStatus
   from_place: string
   to_place: string
-  round_trip: boolean
   total_distance_m: number
   distance_walked_m: number
   miles_total: number

@@ -21,7 +21,7 @@ locals {
     var.environment_variables,
     {
       GCP_PROJECT_ID   = var.project_id
-      ENVIRONMENT      = "production"
+      ENVIRONMENT      = var.environment
       PYTHONUNBUFFERED = "1"
     }
   )
@@ -35,12 +35,14 @@ resource "google_project_service" "required" {
     "artifactregistry.googleapis.com",
     "cloudbuild.googleapis.com",
     "secretmanager.googleapis.com",
-    # services/google_health/client.py calls health.googleapis.com
+    # backend/services/google_health/client.py calls health.googleapis.com
     # directly - confirmed missing in production: GET /v4/users/me/
-    # identity 403'd during the OAuth callback (auth/router.py's
+    # identity 403'd during the OAuth callback (backend/api/auth/router.py's
     # google_callback -> upsert_connection_from_tokens ->
     # get_health_user_id) until this was enabled by hand.
     "health.googleapis.com",
+    "redis.googleapis.com",
+    "vpcaccess.googleapis.com",
   ])
 
   project            = var.project_id
@@ -60,7 +62,7 @@ resource "google_artifact_registry_repository" "worldwalker" {
 
 resource "google_service_account" "runtime" {
   project      = var.project_id
-  account_id   = "worldwalker-runtime"
+  account_id   = var.service_account_id
   display_name = "WorldWalker Cloud Run runtime"
 }
 
@@ -123,7 +125,7 @@ resource "google_cloud_run_v2_service" "worldwalker" {
       # Without an explicit probe, Cloud Run v2 defaults to a bare TCP
       # check on container_port - that only proves a socket is open, not
       # that the FastAPI app behind it is actually serving requests.
-      # /api/config (app.py) is a real route, hit on every login/signup
+      # /api/config (backend/app.py) is a real route, hit on every login/signup
       # page load, that does no database I/O - cheap enough for a
       # liveness probe to poll repeatedly without adding DB load, and a
       # meaningful enough check that it genuinely exercises the HTTP
@@ -156,7 +158,7 @@ resource "google_cloud_run_v2_service" "worldwalker" {
       }
 
       dynamic "env" {
-        for_each = var.secret_env_vars
+        for_each = var.use_memorystore ? { for k, v in var.secret_env_vars : k => v if k != "REDIS_URL" } : var.secret_env_vars
         content {
           name = env.key
           value_source {
@@ -167,6 +169,22 @@ resource "google_cloud_run_v2_service" "worldwalker" {
           }
         }
       }
+
+      dynamic "env" {
+        for_each = var.use_memorystore ? [1] : []
+        content {
+          name  = "REDIS_URL"
+          value = "redis://${google_redis_instance.redis[0].host}:${google_redis_instance.redis[0].port}/0"
+        }
+      }
+    }
+
+    dynamic "vpc_access" {
+      for_each = var.use_memorystore ? [1] : []
+      content {
+        connector = google_vpc_access_connector.redis[0].id
+        egress    = "PRIVATE_RANGES_ONLY"
+      }
     }
   }
 
@@ -174,6 +192,8 @@ resource "google_cloud_run_v2_service" "worldwalker" {
     google_project_service.required,
     google_artifact_registry_repository.worldwalker,
     google_secret_manager_secret_iam_member.runtime_access,
+    google_vpc_access_connector.redis,
+    google_redis_instance.redis,
   ]
 }
 

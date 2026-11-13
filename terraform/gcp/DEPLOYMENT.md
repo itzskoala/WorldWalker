@@ -107,7 +107,7 @@ really required to start the app:
 | `DATABASE_URL` | **Yes** | App refuses to start without it (`database/session.py`) |
 | `JWT_SECRET_KEY` | **Yes** | Signs every access/refresh token |
 | `TOKEN_ENCRYPTION_KEY` | **Yes** | `database/encryption.py` raises at import time without it |
-| `WEBHOOK_SECRET` | **Yes** | `services/google_health/webhook.py` reads this unconditionally at import time - confirmed by running the container without it: the app fails to boot at all, not just that one route |
+| `WEBHOOK_SECRET` | **Yes** | `backend/services/google_health/webhook.py` reads this unconditionally at import time - confirmed by running the container without it: the app fails to boot at all, not just that one route |
 | `OLLAMA_API_KEY` | No | Checkpoint descriptions degrade gracefully without it |
 | `GOOGLE_OAUTH_CLIENT_ID` / `_CLIENT_SECRET` / `_REDIRECT_URI` | No | Only needed for the "Connect Google Health" feature; the app boots fine without them |
 | `GOOGLE_SIGNIN_CLIENT_ID` | No | "Sign in with Google" button hides itself when unset |
@@ -165,7 +165,7 @@ python3 -c "import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).de
   gcloud secrets versions add worldwalker-token-encryption-key --project="$PROJECT" --data-file=-
 
 # WEBHOOK_SECRET - must match whatever you register with the Google
-# Health webhook subscriber (auth/register_webhook_subscription.py). If
+# Health webhook subscriber (backend/auth/register_webhook_subscription.py). If
 # you haven't registered a subscription yet, generate a fresh one now
 # and reuse it when you do:
 python3 -c "import secrets; print('Bearer ' + secrets.token_urlsafe(32))" | \
@@ -519,7 +519,7 @@ gcloud iam service-accounts list --project=worldwalker-511816
 Documented honestly rather than guessed:
 
 - **Org policy on `allUsers`** - whether `worldwalker-511816` has a domain-restricted-sharing policy that would block the public IAM binding wasn't checked (would require org-level IAM access this session doesn't have); the plan/apply will simply fail with a clear error if so, and the fix is documented above.
-- **Google Health webhook registration** - `auth/register_webhook_subscription.py` is a separate, manual script (not run by this guide or by Terraform); run it yourself once `WEBHOOK_PUBLIC_URL` (your real Cloud Run URL) and `WEBHOOK_SECRET` are both set.
+- **Google Health webhook registration** - `backend/auth/register_webhook_subscription.py` is a separate, manual script (not run by this guide or by Terraform); run it yourself once `WEBHOOK_PUBLIC_URL` (your real Cloud Run URL) and `WEBHOOK_SECRET` are both set.
 - **Image-pull IAM on a real Artifact Registry repo in this project** - based on documented GCP behavior (automatic for same-project repos), not independently re-verified here since no image has actually been deployed through this Terraform config yet. The manual IAM grant above is there in case it's ever needed.
 - **This entire deployment sequence has not been run end to end against real GCP** - every command has been verified individually (syntax against the installed `gcloud`/`terraform` CLIs, resource schemas via `terraform validate`/`plan`), and the app itself has been verified end-to-end in Docker against a real Postgres, but nothing has been applied to `worldwalker-511816` and no container has actually been deployed to Cloud Run. That first real run is still yours to do.
 

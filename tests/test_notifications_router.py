@@ -15,11 +15,11 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from accounts.dependencies import get_current_user
-from database.models import User
-from notifications import email_config
-from notifications import router as router_module
-from notifications.router import router
+from backend.accounts.dependencies import get_current_user
+from backend.database.models import User
+from backend.notifications import email_config
+from backend.api.notifications import router as router_module
+from backend.api.notifications.router import router
 
 app = FastAPI()
 app.include_router(router)

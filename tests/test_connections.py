@@ -21,8 +21,8 @@ import pytest
 from cryptography.fernet import Fernet
 from sqlalchemy import text
 
-from auth import connections
-from database.models import GoogleHealthConnection, User
+from backend.auth import connections
+from backend.database.models import GoogleHealthConnection, User
 
 FAKE_TOKENS = {
     "access_token": "fresh-access-token",

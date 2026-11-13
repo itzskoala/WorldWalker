@@ -7,8 +7,8 @@
 
 from sqlalchemy import text
 
-from database.models import User
-from notifications import email_config
+from backend.database.models import User
+from backend.notifications import email_config
 
 
 def _new_user(session):

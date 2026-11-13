@@ -115,14 +115,13 @@ export function AppShell() {
   // overlay TripDetailPage already has for opening an existing trip now
   // covers this wait too, and the map fills in on its own the moment the
   // response lands - no reload needed.
-  function startWalking(from: ResolvedPlace, to: ResolvedPlace, roundTrip: boolean) {
+  function startWalking(from: ResolvedPlace, to: ResolvedPlace) {
     const sessionId = nextSessionId++
     setTripSession({ sessionId, tripId: null, fromPlace: from.label, toPlace: to.label, status: 'loading' })
 
     startJourney({
       from_place: from.label,
       to_place: to.label,
-      round_trip: roundTrip,
       from_lat: from.lat,
       from_lng: from.lng,
       to_lat: to.lat,

@@ -5,7 +5,7 @@
 # distance/calibration. See travel_logic/progress_calculator.py.
 
 import pytest
-from travel_logic.progress_calculator import (
+from backend.travel_logic.progress_calculator import (
     resolve_stride_m,
     steps_to_meters,
     meters_remaining,
@@ -22,8 +22,8 @@ from travel_logic.progress_calculator import (
     DEFAULT_STRIDE_M,
     DEFAULT_STRIDE_M_BY_TYPE,
 )
-from travel_logic.route_service import Route, RoutePoint
-from travel_logic.dataclasses.coordinates import Coordinates
+from backend.travel_logic.route_service import Route, RoutePoint
+from backend.travel_logic.dataclasses.coordinates import Coordinates
 
 
 # --- resolve_stride_m ---

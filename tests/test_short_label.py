@@ -5,7 +5,7 @@
 # real Nominatim address shapes (captured live while building this), not
 # a hardcoded list of cities/counties to special-case.
 
-from travel_logic.geocoder import _short_label
+from backend.travel_logic.geocoder import _short_label
 
 # The real address Nominatim returns for "Ord, Nebraska" (addressdetails=1),
 # captured live - the exact example this feature was requested for.

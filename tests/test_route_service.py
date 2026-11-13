@@ -20,9 +20,9 @@
 
 import pytest
 
-from travel_logic import route_service as route_service_module
-from travel_logic.route_service import OSRMWalkingRouteService, build_route
-from travel_logic.dataclasses.coordinates import Coordinates
+from backend.travel_logic import route_service as route_service_module
+from backend.travel_logic.route_service import OSRMWalkingRouteService, build_route
+from backend.travel_logic.dataclasses.coordinates import Coordinates
 
 
 def test_build_route_total_distance_exactly_matches_last_point_over_many_points():

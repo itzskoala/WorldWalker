@@ -10,8 +10,8 @@
 import requests
 from fastapi.testclient import TestClient
 
-import app as app_module
-from app import app
+import backend.app as app_module
+from backend.app import app
 
 client = TestClient(app)
 

@@ -9,11 +9,11 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from database import trips
-from database.models import TripCheckpoint, User
-from travel_logic.checkpoints import Checkpoint
-from travel_logic.dataclasses.coordinates import Coordinates
-from travel_logic.route_service import Route, RoutePoint
+from backend.database import trips
+from backend.database.models import TripCheckpoint, User
+from backend.travel_logic.checkpoints import Checkpoint
+from backend.travel_logic.dataclasses.coordinates import Coordinates
+from backend.travel_logic.route_service import Route, RoutePoint
 
 TOTAL_DISTANCE_M = 10_000.0
 
@@ -75,7 +75,6 @@ def test_create_trip_persists_the_trip_and_its_checkpoints(db_session):
         gender=None,
         stride_length_m=None,
         stride_by_type={},
-        round_trip=False,
     )
 
     assert trip.status == "active"
@@ -86,7 +85,7 @@ def test_create_trip_persists_the_trip_and_its_checkpoints(db_session):
 
     # Each stored point carries its own real, already-measured distance
     # from the start (route.points[i].distance_from_start, straight off
-    # the Route this trip was created from) - core/facade.py's
+    # the Route this trip was created from) - backend/facade.py's
     # _route_from_geometry() reads this back to rebuild the Route on
     # every later read without re-measuring every pair via haversine all
     # over again. Losing this (storing just {lat, lng}) is exactly what
@@ -104,12 +103,12 @@ def test_create_trip_does_not_disturb_an_existing_active_trip(db_session):
     first_trip = trips.create_trip(
         session=db_session, user_id=user_id, from_place="A", to_place="B",
         route=_route(), checkpoints=[], gender=None, stride_length_m=None,
-        stride_by_type={}, round_trip=False,
+        stride_by_type={},
     )
     second_trip = trips.create_trip(
         session=db_session, user_id=user_id, from_place="C", to_place="D",
         route=_route(), checkpoints=[], gender=None, stride_length_m=None,
-        stride_by_type={}, round_trip=False,
+        stride_by_type={},
     )
 
     db_session.refresh(first_trip)
@@ -129,7 +128,7 @@ def test_get_trip_is_scoped_to_the_owning_user(db_session):
     trip = trips.create_trip(
         session=db_session, user_id=owner_id, from_place="A", to_place="B",
         route=_route(), checkpoints=[], gender=None, stride_length_m=None,
-        stride_by_type={}, round_trip=False,
+        stride_by_type={},
     )
 
     assert trips.get_trip(db_session, trip.id, owner_id).id == trip.id
@@ -141,7 +140,7 @@ def test_pause_then_resume_accumulates_total_paused_seconds(db_session, monkeypa
     trip = trips.create_trip(
         session=db_session, user_id=user_id, from_place="A", to_place="B",
         route=_route(), checkpoints=[], gender=None, stride_length_m=None,
-        stride_by_type={}, round_trip=False,
+        stride_by_type={},
     )
 
     fake_now = [datetime(2026, 9, 8, 9, 0, 0, tzinfo=timezone.utc)]
@@ -171,7 +170,7 @@ def test_pause_and_resume_are_no_ops_in_the_wrong_state(db_session):
     trip = trips.create_trip(
         session=db_session, user_id=user_id, from_place="A", to_place="B",
         route=_route(), checkpoints=[], gender=None, stride_length_m=None,
-        stride_by_type={}, round_trip=False,
+        stride_by_type={},
     )
 
     trips.resume_trip(db_session, trip)  # not paused - no-op
@@ -187,7 +186,7 @@ def test_delete_trip_removes_it_and_its_checkpoints(db_session):
     trip = trips.create_trip(
         session=db_session, user_id=user_id, from_place="A", to_place="B",
         route=_route(), checkpoints=[_checkpoint("Midway", 5_000.0)], gender=None,
-        stride_length_m=None, stride_by_type={}, round_trip=False,
+        stride_length_m=None, stride_by_type={},
     )
     trip_id = trip.id
 
@@ -202,12 +201,12 @@ def test_delete_trips_removes_only_the_given_ones(db_session):
     keep = trips.create_trip(
         session=db_session, user_id=user_id, from_place="A", to_place="B",
         route=_route(), checkpoints=[], gender=None, stride_length_m=None,
-        stride_by_type={}, round_trip=False,
+        stride_by_type={},
     )
     delete_me = trips.create_trip(
         session=db_session, user_id=user_id, from_place="C", to_place="D",
         route=_route(), checkpoints=[], gender=None, stride_length_m=None,
-        stride_by_type={}, round_trip=False,
+        stride_by_type={},
     )
 
     trips.delete_trips(db_session, [delete_me])
@@ -221,12 +220,12 @@ def test_list_trips_returns_every_trip_regardless_of_status(db_session):
     active = trips.create_trip(
         session=db_session, user_id=user_id, from_place="A", to_place="B",
         route=_route(), checkpoints=[], gender=None, stride_length_m=None,
-        stride_by_type={}, round_trip=False,
+        stride_by_type={},
     )
     finished = trips.create_trip(
         session=db_session, user_id=user_id, from_place="C", to_place="D",
         route=_route(), checkpoints=[], gender=None, stride_length_m=None,
-        stride_by_type={}, round_trip=False,
+        stride_by_type={},
     )
     trips.complete_trip(db_session, finished)
 
@@ -238,7 +237,7 @@ def test_add_progress_accumulates_meters_walked_and_records_workout_intervals(db
     trip = trips.create_trip(
         session=db_session, user_id=user_id, from_place="A", to_place="B",
         route=_route(), checkpoints=[], gender=None, stride_length_m=None,
-        stride_by_type={}, round_trip=False,
+        stride_by_type={},
     )
 
     trips.add_progress(db_session, trip, 1_000.0)
@@ -254,7 +253,7 @@ def test_mark_checkpoints_hit_only_returns_newly_hit_ones_each_call(db_session):
         session=db_session, user_id=user_id, from_place="A", to_place="B",
         route=_route(),
         checkpoints=[_checkpoint("Near", 2_000.0, checkpoint_number=1), _checkpoint("Far", 8_000.0, checkpoint_number=2)],
-        gender=None, stride_length_m=None, stride_by_type={}, round_trip=False,
+        gender=None, stride_length_m=None, stride_by_type={},
     )
 
     newly_hit_at_3000m = trips.mark_checkpoints_hit(db_session, trip, distance_walked_m=3_000.0)
@@ -273,7 +272,7 @@ def test_complete_trip_flips_status_and_drops_out_of_get_active_trips(db_session
     trip = trips.create_trip(
         session=db_session, user_id=user_id, from_place="A", to_place="B",
         route=_route(), checkpoints=[], gender=None, stride_length_m=None,
-        stride_by_type={}, round_trip=False,
+        stride_by_type={},
     )
 
     trips.complete_trip(db_session, trip)
@@ -291,7 +290,7 @@ def test_create_trip_generates_checkpoint_positions_when_none_are_given(db_sessi
     user_id = _make_user(db_session)
     trip = trips.create_trip(
         session=db_session, user_id=user_id, from_place="A", to_place="B",
-        route=_route(), gender=None, stride_length_m=None, stride_by_type={}, round_trip=False,
+        route=_route(), gender=None, stride_length_m=None, stride_by_type={},
     )
 
     assert len(trip.checkpoints) > 0
@@ -303,12 +302,12 @@ def test_create_trip_generates_checkpoint_positions_when_none_are_given(db_sessi
 
 
 def test_create_trip_generates_a_reveal_radius_within_the_configured_range_when_none_is_given(db_session):
-    from travel_logic.checkpoints import CHECKPOINT_REVEAL_RADIUS_MIN_M, CHECKPOINT_REVEAL_RADIUS_MAX_M
+    from backend.travel_logic.checkpoints import CHECKPOINT_REVEAL_RADIUS_MIN_M, CHECKPOINT_REVEAL_RADIUS_MAX_M
 
     user_id = _make_user(db_session)
     trip = trips.create_trip(
         session=db_session, user_id=user_id, from_place="A", to_place="B",
-        route=_route(), checkpoints=[], gender=None, stride_length_m=None, stride_by_type={}, round_trip=False,
+        route=_route(), checkpoints=[], gender=None, stride_length_m=None, stride_by_type={},
     )
 
     assert CHECKPOINT_REVEAL_RADIUS_MIN_M <= trip.checkpoint_reveal_radius_m <= CHECKPOINT_REVEAL_RADIUS_MAX_M
@@ -318,7 +317,7 @@ def test_create_trip_persists_an_explicit_reveal_radius_instead_of_generating_on
     user_id = _make_user(db_session)
     trip = trips.create_trip(
         session=db_session, user_id=user_id, from_place="A", to_place="B",
-        route=_route(), checkpoints=[], gender=None, stride_length_m=None, stride_by_type={}, round_trip=False,
+        route=_route(), checkpoints=[], gender=None, stride_length_m=None, stride_by_type={},
         checkpoint_reveal_radius_m=88.0,
     )
 
@@ -331,7 +330,7 @@ def test_create_trip_persists_the_same_radius_on_reload_not_a_fresh_random_one(d
     user_id = _make_user(db_session)
     trip = trips.create_trip(
         session=db_session, user_id=user_id, from_place="A", to_place="B",
-        route=_route(), checkpoints=[], gender=None, stride_length_m=None, stride_by_type={}, round_trip=False,
+        route=_route(), checkpoints=[], gender=None, stride_length_m=None, stride_by_type={},
     )
     original_radius = trip.checkpoint_reveal_radius_m
 
@@ -348,7 +347,7 @@ def test_mark_checkpoints_revealed_only_reveals_checkpoints_within_the_radius(db
         session=db_session, user_id=user_id, from_place="A", to_place="B",
         route=_route(),
         checkpoints=[_checkpoint("Near", 1_000.0, checkpoint_number=1), _checkpoint("Far", 9_000.0, checkpoint_number=2)],
-        gender=None, stride_length_m=None, stride_by_type={}, round_trip=False,
+        gender=None, stride_length_m=None, stride_by_type={},
         checkpoint_reveal_radius_m=75.0,
     )
 
@@ -367,7 +366,7 @@ def test_mark_checkpoints_revealed_stays_revealed_once_set_even_after_walking_pa
     trip = trips.create_trip(
         session=db_session, user_id=user_id, from_place="A", to_place="B",
         route=_route(), checkpoints=[_checkpoint("Near", 1_000.0, checkpoint_number=1)],
-        gender=None, stride_length_m=None, stride_by_type={}, round_trip=False,
+        gender=None, stride_length_m=None, stride_by_type={},
         checkpoint_reveal_radius_m=75.0,
     )
 
@@ -388,7 +387,7 @@ def test_mark_checkpoints_revealed_only_returns_the_newly_revealed_ones_each_cal
         session=db_session, user_id=user_id, from_place="A", to_place="B",
         route=_route(),
         checkpoints=[_checkpoint("Near", 2_000.0, checkpoint_number=1), _checkpoint("Far", 8_000.0, checkpoint_number=2)],
-        gender=None, stride_length_m=None, stride_by_type={}, round_trip=False,
+        gender=None, stride_length_m=None, stride_by_type={},
         checkpoint_reveal_radius_m=75.0,
     )
 
@@ -408,7 +407,7 @@ def test_claim_checkpoint_for_metadata_wins_once_and_blocks_a_second_concurrent_
     user_id = _make_user(db_session)
     trip = trips.create_trip(
         session=db_session, user_id=user_id, from_place="A", to_place="B",
-        route=_route(), checkpoints=[], gender=None, stride_length_m=None, stride_by_type={}, round_trip=False,
+        route=_route(), checkpoints=[], gender=None, stride_length_m=None, stride_by_type={},
     )
     checkpoint = TripCheckpoint(trip_id=trip.id, checkpoint_number=1, name="", lat=0.0, lng=0.0, distance_from_start_m=1000.0)
     db_session.add(checkpoint)
@@ -427,7 +426,7 @@ def test_claim_checkpoint_for_metadata_never_reclaims_an_already_ready_checkpoin
     user_id = _make_user(db_session)
     trip = trips.create_trip(
         session=db_session, user_id=user_id, from_place="A", to_place="B",
-        route=_route(), checkpoints=[], gender=None, stride_length_m=None, stride_by_type={}, round_trip=False,
+        route=_route(), checkpoints=[], gender=None, stride_length_m=None, stride_by_type={},
     )
     checkpoint = TripCheckpoint(
         trip_id=trip.id, checkpoint_number=1, name="Chicago", lat=0.0, lng=0.0,
@@ -443,7 +442,7 @@ def test_claim_checkpoint_for_metadata_reclaims_a_stale_processing_checkpoint(db
     user_id = _make_user(db_session)
     trip = trips.create_trip(
         session=db_session, user_id=user_id, from_place="A", to_place="B",
-        route=_route(), checkpoints=[], gender=None, stride_length_m=None, stride_by_type={}, round_trip=False,
+        route=_route(), checkpoints=[], gender=None, stride_length_m=None, stride_by_type={},
     )
     checkpoint = TripCheckpoint(
         trip_id=trip.id, checkpoint_number=1, name="", lat=0.0, lng=0.0, distance_from_start_m=1000.0,
@@ -462,7 +461,7 @@ def test_release_checkpoint_metadata_claim_puts_it_back_to_pending(db_session):
     user_id = _make_user(db_session)
     trip = trips.create_trip(
         session=db_session, user_id=user_id, from_place="A", to_place="B",
-        route=_route(), checkpoints=[], gender=None, stride_length_m=None, stride_by_type={}, round_trip=False,
+        route=_route(), checkpoints=[], gender=None, stride_length_m=None, stride_by_type={},
     )
     checkpoint = TripCheckpoint(
         trip_id=trip.id, checkpoint_number=1, name="", lat=0.0, lng=0.0, distance_from_start_m=1000.0,
@@ -484,7 +483,7 @@ def test_set_checkpoint_metadata_fills_in_name_and_description_and_flips_to_read
     user_id = _make_user(db_session)
     trip = trips.create_trip(
         session=db_session, user_id=user_id, from_place="A", to_place="B",
-        route=_route(), checkpoints=[], gender=None, stride_length_m=None, stride_by_type={}, round_trip=False,
+        route=_route(), checkpoints=[], gender=None, stride_length_m=None, stride_by_type={},
     )
     checkpoint = TripCheckpoint(
         trip_id=trip.id, checkpoint_number=1, name="", lat=0.0, lng=0.0, distance_from_start_m=1000.0,

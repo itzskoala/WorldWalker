@@ -9,10 +9,11 @@ google-auth
 requests
 sqlalchemy
 psycopg[binary]
-alembic
 python-dotenv
 cryptography
 pyjwt
 bcrypt
 redmail
 dnspython
+redis
+better-profanity

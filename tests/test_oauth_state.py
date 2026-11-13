@@ -9,8 +9,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from auth import oauth_state
-from database.models import OAuthState, User
+from backend.auth import oauth_state
+from backend.database.models import OAuthState, User
 
 
 def _new_user(session) -> User:

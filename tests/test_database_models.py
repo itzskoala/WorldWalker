@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 import pytest
 from sqlalchemy.exc import IntegrityError
 
-from database.models import ActiveTrip, GoogleHealthConnection, TripCheckpoint, User
+from backend.database.models import ActiveTrip, GoogleHealthConnection, TripCheckpoint, User
 
 
 def _make_user_and_connection(db_session, provider_user_id="google-user-1"):
@@ -131,7 +131,6 @@ def test_creating_a_trip_works_with_sensible_defaults(db_session):
     assert trip.id is not None
     assert trip.status == "active"
     assert trip.meters_walked == 0.0
-    assert trip.round_trip is False
     assert trip.stride_by_type == {}
     assert trip.workout_intervals == []
     assert trip.milestones_notified == []
