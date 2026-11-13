@@ -2615,31 +2615,15 @@ button.profile-section-chevron.is-link:hover {
   display: none;
 }
 
-/* ---------- Map nav cluster (reset-view + zoom) and the map-style
-   switcher - both custom MapLibre controls, bottom-right (see
-   web/static/js/components/trip-map.js's buildNavControl/buildStyleControl).
-   Always a white glass regardless of app theme - like Google Maps' own
-   zoom chrome, these need to read over whatever map style is underneath,
-   not match light/dark mode. ---------- */
-
-/* A 2-column grid, not a flex stack - the reset/zoom cluster spans both
-   columns (its own row, right-aligned); the map-style button and
-   MapLibre's own attribution "i" icon share the row below it, style
-   button on the left of the info icon rather than stacked above/below
-   it. Grid (not flex order) is what makes that pairing possible - see
-   the grid-column rules below. */
 .trip-map-full .maplibregl-ctrl-bottom-right {
-  display: grid;
-  grid-template-columns: auto auto;
-  justify-content: end;
-  align-items: end;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
   gap: 10px;
   margin: 0 12px 12px 0;
 }
 
 .trip-nav-control {
-  grid-column: 1 / -1;
-  justify-self: end;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -2706,8 +2690,6 @@ button.profile-section-chevron.is-link:hover {
   background: rgba(0, 0, 0, 0.05);
 }
 
-/* At either zoom limit (tripMap.ts's updateZoomButtons) - greyed out and
-   inert, same affordance as Google Maps' own +/- control. */
 .trip-ctrl-zoom button:disabled {
   color: rgba(38, 32, 23, 0.3);
   cursor: default;
@@ -2717,75 +2699,154 @@ button.profile-section-chevron.is-link:hover {
   background: transparent;
 }
 
-/* Spans the full grid width and right-aligns, exactly like
-   .trip-nav-control above - it used to be pinned to column 1 alone,
-   which meant its position depended on however wide column 2 (the
-   attribution control, directly below) happened to be. Since that
-   control's own width changes when someone expands/collapses the "i"
-   attribution text, the old layout made this button visibly jump
-   sideways on every attribution toggle, and left it sitting ~34px short
-   of flush with the zoom/reset buttons the rest of the time. Spanning
-   the full width instead anchors it to the box's own right edge, same
-   as .trip-nav-control, so neither bug can happen regardless of what
-   column 2 is doing. */
-.trip-style-control {
-  grid-column: 1 / -1;
-  justify-self: end;
-  margin: 0 !important;
-}
-
-/* Same full-span/right-align reasoning as .trip-style-control above - the
-   locate button is its own standalone control too, between the
-   map-settings icon and the reset-view/zoom stack. */
 .trip-locate-control {
-  grid-column: 1 / -1;
-  justify-self: end;
   margin: 0 !important;
 }
 
-/* MapLibre's own control - left in column 2 on its own row, unaffected
-   by the two buttons above now that neither of them depends on this
-   column's width any more. */
 .trip-map-full .maplibregl-ctrl-attrib {
-  grid-column: 2;
   margin: 0 !important;
 }
 
-/* .trip-style-btn itself carries no styling of its own - it shares
-   .trip-ctrl-btn (reset-view, zoom) above it, so the three read as one
-   consistent stack instead of a pill with a text label sitting oddly
-   next to two plain circles. */
+.trip-map-full .maplibregl-ctrl-bottom-left {
+  margin: 0 0 12px 24px;
+}
 
-/* ---------- Map Settings popover: opened by .trip-style-btn, rendered
-   on document.body (tripMap.ts) rather than nested in the small
-   map-corner control, so it sits above the whole app, not just the map.
-   Content modeled on Strava's own "Map Settings" panel - header + close,
-   a divider, then one swatch per map style - scoped to just that one
-   section since it's the only one we have real options for. Positioned
-   (tripMap.ts sets .trip-map-settings-sheet's own fixed bottom/right
-   inline) as a card popping up right above the toggle button itself,
-   not a sheet sliding up from the bottom of the screen. ---------- */
+.trip-map-full .maplibregl-ctrl-scale {
+  margin: 14px 0 0 !important;
+  background-color: #fff;
+  border-color: #262420;
+  border-radius: 0 0 6px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #262420;
+  padding: 2px 8px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.22);
+}
+
+.trip-style-control {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 !important;
+}
+
+.trip-style-strip-item,
+.trip-style-strip-more {
+  flex: none;
+  height: 68px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.trip-style-thumb-btn {
+  position: relative;
+  flex: none;
+  height: 84px;
+  width: 84px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.trip-style-strip-item img,
+.trip-style-more-icon {
+  box-sizing: border-box;
+  width: 48px;
+  height: 48px;
+  border-radius: 10px;
+  object-fit: cover;
+  transition: box-shadow 0.15s ease;
+}
+
+.trip-style-thumb-btn img {
+  box-sizing: border-box;
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 16px;
+  border: 2px solid #1a1a1a;
+  object-fit: cover;
+  transition: box-shadow 0.15s ease;
+}
+
+.trip-style-thumb-caption {
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  bottom: 2px;
+  padding: 3px 0 4px;
+  border-radius: 0 0 14px 14px;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.65));
+  color: #fff;
+  font-size: 0.6rem;
+  font-weight: 700;
+  text-align: center;
+}
+
+.trip-style-thumb-btn:hover img,
+.trip-style-thumb-btn:focus-visible img,
+.trip-style-strip-item:hover img,
+.trip-style-strip-item:focus-visible img,
+.trip-style-strip-more:hover .trip-style-more-icon,
+.trip-style-strip-more:focus-visible .trip-style-more-icon {
+  box-shadow: 0 0 0 3px #9d4edd;
+}
+
+.trip-style-more-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #eef0f2;
+  color: #262420;
+}
+
+.trip-style-more-icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+.trip-style-strip {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 0;
+  overflow: hidden;
+  padding: 8px 0;
+  background: #fff;
+  border-radius: 12px;
+  box-shadow: none;
+  transition: max-width 0.3s ease, padding-left 0.3s ease, padding-right 0.3s ease;
+}
+
+.trip-style-strip.is-open {
+  max-width: 400px;
+  padding-left: 8px;
+  padding-right: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+}
 
 .trip-map-settings-backdrop {
   position: fixed;
   inset: 0;
   z-index: 60;
-  /* No tint - this is a small anchored popover, not a full-screen modal
-     takeover; the backdrop exists only to catch the "click outside"
-     that closes it. */
   background: transparent;
 }
 
 .trip-map-settings-sheet {
-  width: 244px;
+  width: 300px;
   max-width: calc(100vw - 24px);
   max-height: 80vh;
   overflow-y: auto;
   background: #fff;
   border-radius: 16px;
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.3);
-  transform-origin: bottom right;
+  transform-origin: bottom left;
   animation: trip-map-settings-pop 0.15s ease;
+  color-scheme: light;
 }
 
 @keyframes trip-map-settings-pop {
@@ -2849,46 +2910,10 @@ button.profile-section-chevron.is-link:hover {
   color: #221f1a;
 }
 
-.trip-map-settings-styles {
-  display: flex;
-  gap: 8px;
-}
-
-.trip-map-style-option {
-  flex: none;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-  width: 64px;
-  border: none;
-  background: transparent;
-  cursor: pointer;
-}
-
 .trip-map-style-label {
   font-size: 0.68rem;
   font-weight: 600;
   color: #6b6860;
-}
-
-.trip-map-style-option.is-active .trip-map-style-label {
-  color: #1f6f52;
-}
-
-.trip-style-swatch {
-  flex: none;
-  display: block;
-  width: 56px;
-  height: 56px;
-  border-radius: 12px;
-  border: 2px solid rgba(0, 0, 0, 0.1);
-  object-fit: cover;
-}
-
-.trip-map-style-option.is-active .trip-style-swatch {
-  border-color: #1f6f52;
-  box-shadow: 0 0 0 2px rgba(31, 111, 82, 0.18);
 }
 
 .trip-map-settings-colors {
@@ -2902,7 +2927,7 @@ button.profile-section-chevron.is-link:hover {
   flex-direction: column;
   align-items: center;
   gap: 6px;
-  width: 64px;
+  width: 58px;
   border: none;
   background: transparent;
   cursor: pointer;
@@ -2926,9 +2951,31 @@ button.profile-section-chevron.is-link:hover {
   box-shadow: 0 0 0 2px rgba(31, 111, 82, 0.18);
 }
 
-/* ---------- Top overlay: back, the start -> destination card (the
-   Google Maps upper-left info card is the direct reference), pause -
-   floats over the map, not a layout participant. ---------- */
+.trip-map-settings-toggles {
+  display: flex;
+  gap: 20px;
+}
+
+.trip-map-settings-globe {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #221f1a;
+  cursor: pointer;
+}
+
+.trip-map-settings-globe input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  background: #fff;
+  border: 1.5px solid rgba(0, 0, 0, 0.3);
+  border-radius: 3px;
+  accent-color: #1f6f52;
+  cursor: pointer;
+}
 
 .trip-overlay-top {
   position: absolute;
@@ -2940,8 +2987,6 @@ button.profile-section-chevron.is-link:hover {
   flex-direction: column;
   gap: 10px;
   padding: clamp(12px, 3vw, 24px);
-  /* The gaps around/below the overlay's own content fall through to the
-     map underneath - only the row below (auto) actually captures clicks. */
   pointer-events: none;
 }
 
@@ -3327,66 +3372,78 @@ button.profile-section-chevron.is-link:hover {
   background: var(--red);
 }
 
-/* Base = 'hit': reached already. Solid green, same hue as the walked
-   route line (trip-route-line's traveled segment in tripMap.ts), so the
-   string of passed checkpoints reads as part of the completed trail
-   instead of competing with what's still ahead. Sized off
-   --checkpoint-scale (tripMap.ts's updateCheckpointScale(), set on the
-   map container and read here via inheritance) rather than a
-   `transform: scale()`, since MapLibre's own Marker positioning already
-   owns this element's transform. */
+/* A flat red map pin (teardrop, point down - see
+   createCheckpointMarkerElement()/CHECKPOINT_PIN_PATH in tripMap.ts for
+   why the shape itself is an SVG path rather than a rotated div) instead
+   of the plain dot this used to be. Sized off --checkpoint-scale
+   (tripMap.ts's updateCheckpointScale(), set on the map container and
+   read here via inheritance) via width/height rather than a `transform:
+   scale()`, since MapLibre's own Marker positioning already owns this
+   element's transform.
+   Base = 'hit': reached already - solid, fully-opaque red. This used to
+   match the walked route line's green so passed checkpoints read as
+   part of the completed trail; red pins read more as "a place marked on
+   the map" than "progress", which is the trade this redesign makes. */
 .trip-marker-checkpoint {
-  width: calc(14px * var(--checkpoint-scale, 1));
-  height: calc(14px * var(--checkpoint-scale, 1));
-  border-radius: 50%;
-  background: #2fae6b;
-  border: 2px solid #fff;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+  width: calc(20px * var(--checkpoint-scale, 1));
+  height: calc(26px * var(--checkpoint-scale, 1));
+  color: #c0392b;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.35));
   transition:
     width 0.2s ease,
     height 0.2s ease;
 }
 
+.trip-marker-checkpoint svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.trip-marker-checkpoint svg path {
+  fill: currentColor;
+}
+
 .trip-marker-checkpoint.is-ghost {
-  background: transparent;
-  border: 2px dashed var(--ink-faint);
+  color: var(--ink-faint);
   opacity: 0.6;
 }
 
-/* The single nearest not-yet-reached checkpoint - the only marker that
-   gets the full saturated "look here" yellow, slightly larger than the
-   rest so it reads as the current waypoint at a glance. */
-.trip-marker-checkpoint.is-next {
-  width: calc(18px * var(--checkpoint-scale, 1));
-  height: calc(18px * var(--checkpoint-scale, 1));
-  background: #ffc53d;
-  box-shadow:
-    0 0 0 4px rgba(255, 197, 61, 0.28),
-    0 2px 6px rgba(0, 0, 0, 0.4);
+.trip-marker-checkpoint.is-ghost svg path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-dasharray: 2 2;
 }
 
-/* Found and described, further out than the 'next' checkpoint - a
-   small, quiet, desaturated tick rather than a competing full-size
-   marker. A route with a dozen of these used to render a dozen equally
-   loud yellow dots; now only 'next' pops and the rest just mark the
-   path. */
+/* The single nearest not-yet-reached checkpoint - the only marker that
+   gets the full saturated "look here" red, larger than the rest so it
+   reads as the current waypoint at a glance. */
+.trip-marker-checkpoint.is-next {
+  width: calc(26px * var(--checkpoint-scale, 1));
+  height: calc(34px * var(--checkpoint-scale, 1));
+  color: #e8291c;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.4));
+}
+
+/* Found and described, further out than the 'next' checkpoint - small
+   and faded rather than a competing full-size pin. A route with a dozen
+   of these used to render a dozen equally loud dots; now only 'next'
+   pops and the rest just mark the path. */
 .trip-marker-checkpoint.is-upcoming {
-  width: calc(8px * var(--checkpoint-scale, 1));
-  height: calc(8px * var(--checkpoint-scale, 1));
-  background: rgba(245, 243, 238, 0.55);
-  border-width: 1.5px;
-  box-shadow: none;
+  width: calc(12px * var(--checkpoint-scale, 1));
+  height: calc(15px * var(--checkpoint-scale, 1));
+  color: #c0392b;
+  opacity: 0.45;
+  filter: none;
 }
 
 /* Found, but its AI description is still generating (a separate model
    call per checkpoint, off the main discovery loop - core/facade.py's
-   generate_checkpoints_for_trip()) - an outline that pulses rather than a
-   filled dot, so it reads as "still working" at a glance. Neutral, not
-   yellow, so it doesn't compete with the one 'next' marker that's
-   supposed to be the only saturated dot on the route. */
+   generate_checkpoints_for_trip()) - the pin pulses in and out rather
+   than sitting fully solid, so it reads as "still working" at a glance. */
 .trip-marker-checkpoint.is-generating {
-  background: transparent;
-  border: 2px solid rgba(245, 243, 238, 0.75);
+  color: #c0392b;
   animation: trip-checkpoint-pulse 1.4s ease-in-out infinite;
 }
 
@@ -4320,15 +4377,30 @@ button.profile-section-chevron.is-link:hover {
 }
 
 .auth-modal .auth-field {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
 
+/* Floating label - hidden while the field is empty (the placeholder
+   shows instead), and appears inside the pill once there's a value,
+   same spot the returning-user email sits above its masked value. */
 .auth-modal .auth-field label {
-  font-size: 0.82rem;
+  position: absolute;
+  z-index: 1;
+  top: 10px;
+  left: 16px;
+  font-size: 0.72rem;
   font-weight: 700;
-  color: var(--text);
+  color: var(--text-muted);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.1s ease;
+}
+
+.auth-modal .auth-field:has(input:not(:placeholder-shown)) label {
+  opacity: 1;
 }
 
 .auth-modal .auth-field input {
@@ -4339,6 +4411,12 @@ button.profile-section-chevron.is-link:hover {
   color: var(--text);
   font-size: 1rem;
   font-family: inherit;
+}
+
+/* Room for the floating label above the text once it's shown. */
+.auth-modal .auth-field:has(input:not(:placeholder-shown)) input {
+  padding-top: 24px;
+  padding-bottom: 6px;
 }
 
 .auth-modal .auth-field input[readonly] {
@@ -4681,6 +4759,17 @@ button.profile-section-chevron.is-link:hover {
   min-height: 2.5em;
 }
 
+/* The mission statement sentence under the typewriter headline - its own
+   size tier between the big headline and regular body text. */
+.landing-hero-mission {
+  margin: 0;
+  max-width: 34em;
+  font-size: clamp(1rem, 1.3vw, 1.15rem);
+  font-weight: 500;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
 /* A steady blinking caret after the animated text - TypewriterHeadline.tsx
    marks the whole animated span aria-hidden (a separate .sr-only span
    carries the real accessible name), so this is purely decorative. */
@@ -4716,10 +4805,10 @@ button.profile-section-chevron.is-link:hover {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  /* A bit more than .landing-hero-copy's own 22px flex gap, just between
-     the headline and this button specifically - not the gap below it to
-     the stats row. */
-  margin-top: 10px;
+  /* More than .landing-hero-copy's own 22px flex gap, so there's real
+     breathing room between the mission statement and this button - not
+     the gap below it to the stats row. */
+  margin-top: 28px;
   padding: 12px 28px;
   border: none;
   border-radius: 999px;
@@ -4893,6 +4982,92 @@ button.profile-section-chevron.is-link:hover {
   margin: 0;
   font-size: 1rem;
   color: var(--text-muted);
+}
+
+/* ---------- Legal pages (PrivacyPage/TermsPage via LegalPage.tsx) ----------
+   Left-aligned, readable article width - unlike .landing-placeholder
+   above, these have real paragraphs/lists to read, not one centered
+   line. */
+.legal-page {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: clamp(48px, 8vw, 96px) 24px 120px;
+}
+
+.legal-title {
+  margin: 0 0 6px;
+  font-size: clamp(1.8rem, 4vw, 2.4rem);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--text);
+}
+
+.legal-updated {
+  margin: 0 0 28px;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.legal-summary {
+  margin-bottom: 40px;
+  padding: 20px 24px;
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--field-bg);
+}
+
+.legal-summary-label {
+  margin: 0 0 8px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.legal-summary p {
+  margin: 0;
+  font-size: 0.95rem;
+  line-height: 1.6;
+  color: var(--text);
+}
+
+.legal-body h2 {
+  margin: 36px 0 12px;
+  font-size: 1.15rem;
+  font-weight: 800;
+  color: var(--text);
+}
+
+.legal-body h3 {
+  margin: 20px 0 8px;
+  font-size: 0.98rem;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.legal-body p,
+.legal-body li {
+  font-size: 0.92rem;
+  line-height: 1.65;
+  color: var(--text-muted);
+}
+
+.legal-body p {
+  margin: 0 0 14px;
+}
+
+.legal-body ul {
+  margin: 0 0 14px;
+  padding-left: 22px;
+}
+
+.legal-body li {
+  margin-bottom: 6px;
+}
+
+.legal-body a {
+  color: var(--blue);
 }
 
 @media (max-width: 860px) {

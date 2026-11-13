@@ -17,6 +17,7 @@ import { PricingPage } from './pages/PricingPage'
 import { TermsPage } from './pages/TermsPage'
 import { PrivacyPage } from './pages/PrivacyPage'
 import { ForgotPasswordPage } from './pages/ForgotPasswordPage'
+import { MapTestPage } from './testPages/MapTestPage'
 import { AppShell } from './AppShell'
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
@@ -71,6 +72,7 @@ function App() {
           <Route path="/terms" element={<TermsPage />} />
           <Route path="/privacy" element={<PrivacyPage />} />
           <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+          <Route path="/maptest" element={<MapTestPage />} />
           <Route path="/" element={<RootRoute />} />
           <Route
             path="/*"
