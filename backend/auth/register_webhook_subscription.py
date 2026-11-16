@@ -30,7 +30,8 @@ def _service_account_token() -> str:
 
 
 def _request(method: str, url: str, body: dict | None = None) -> httpx.Response:
-    return httpx.request(method, url, json=body, headers={"Authorization": f"Bearer {_service_account_token()}"})
+    headers = {"Authorization": f"Bearer {_service_account_token()}"}
+    return httpx.request(method, url, json=body, headers=headers, timeout=60)
 
 
 def _raise_with_body(response: httpx.Response):
